@@ -1,0 +1,6 @@
+{
+  "name": "Monarch Spinner System",
+  "description": "An elite AI-powered hologram interface and evolution system for leg spinners inspired by futuristic operating systems. Features session tracking, skill inventory, dungeons, and rank ascensions.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

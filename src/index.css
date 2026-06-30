@@ -1,0 +1,90 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;700&family=Space+Grotesk:wght@500;700&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Space Grotesk", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+}
+
+body {
+  background-color: #050505;
+  color: #f3f4f6;
+  font-family: var(--font-sans);
+  -webkit-tap-highlight-color: transparent;
+  -webkit-touch-callout: none;
+  overscroll-behavior-y: contain; /* Prevents pull-to-refresh on mobile browsers */
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* App-wide text input selection should remain enabled, but others disabled */
+input, textarea {
+  user-select: text !important;
+  -webkit-user-select: text !important;
+}
+
+img {
+  -webkit-user-drag: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* Custom interactive active state feedback */
+button:active {
+  transform: scale(0.98);
+}
+
+/* Custom glowing filters */
+.cyan-glow-border {
+  border: 1px solid rgba(0, 217, 255, 0.25);
+  box-shadow: 0 0 15px rgba(0, 217, 255, 0.08);
+}
+
+.purple-glow-border {
+  border: 1px solid rgba(123, 47, 255, 0.25);
+  box-shadow: 0 0 15px rgba(123, 47, 255, 0.08);
+}
+
+.gold-glow-border {
+  border: 1px solid rgba(255, 215, 0, 0.25);
+  box-shadow: 0 0 15px rgba(255, 215, 0, 0.08);
+}
+
+.crimson-glow-border {
+  border: 1px solid rgba(255, 43, 43, 0.25);
+  box-shadow: 0 0 15px rgba(255, 43, 43, 0.08);
+}
+
+/* Custom scrollbars for high tech dark look */
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+
+::-webkit-scrollbar-track {
+  background: #0a0a0a;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #222;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #7B2FFF;
+}
+
+@keyframes spin-slow {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.animate-spin-slow {
+  animation: spin-slow 25s linear infinite;
+}
+
