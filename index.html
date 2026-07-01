@@ -4,25 +4,9 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
     <title>Monarch Spinner System</title>
-    <script>
-      (function() {
-        if (window.opener && window.location.hash && window.location.hash.includes('access_token=')) {
-          try {
-            window.opener.postMessage({
-              type: 'SUPABASE_OAUTH_SUCCESS',
-              hash: window.location.hash
-            }, '*');
-            window.close();
-          } catch (e) {
-            console.error("Popup communication error:", e);
-          }
-        }
-      })();
-    </script>
   </head>
   <body>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
-

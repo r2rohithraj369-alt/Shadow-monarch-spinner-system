@@ -32,7 +32,6 @@ class CloudSyncManager {
   constructor() {
     this.initAuthListener();
     this.initNativeDeepLinkListener();
-    this.initWebPopupListener();
     this.initNetworkListeners();
   }
 
@@ -86,7 +85,7 @@ class CloudSyncManager {
       this.userSession = session;
       if (session?.user) {
         await this.triggerInitialSync();
-      } else {
+      } else if (event === "SIGNED_OUT") {
         this.setSyncState("idle");
       }
     });
@@ -113,87 +112,59 @@ class CloudSyncManager {
     if (typeof window !== "undefined" && Capacitor.isNativePlatform()) {
       CapApp.addListener("appUrlOpen", async (event: any) => {
         console.log("[DeepLink] Received url handler event:", event.url);
-        // Structure: monarchspinner://callback#access_token=...&refresh_token=...
-        if (event.url && event.url.includes("access_token=")) {
-          try {
-            const hashIndex = event.url.indexOf("#");
-            if (hashIndex === -1) return;
-            const hash = event.url.substring(hashIndex + 1);
-            const params = new URLSearchParams(hash);
-            
-            const accessToken = params.get("access_token");
-            const refreshToken = params.get("refresh_token");
+        if (!event.url) return;
 
-            if (accessToken && refreshToken) {
-              this.setSyncState("syncing", "Restoring secure cloud profile from deep link...");
-              const supabase = getSupabase();
-              if (supabase) {
-                const { error } = await supabase.auth.setSession({
-                  access_token: accessToken,
-                  refresh_token: refreshToken
-                });
-                if (error) {
-                  console.error("[DeepLink] setSession error:", error);
-                  this.setSyncState("error", "Authentic flow failed: " + error.message);
-                } else {
-                  console.log("[DeepLink] Session restored successfully!");
-                  await CapBrowser.close();
-                  await this.triggerInitialSync();
-                }
-              }
-            }
-          } catch (err: any) {
-            console.error("[DeepLink] Parse fallback error:", err);
-            this.setSyncState("error", "Failed resolving callback coordinates: " + err.message);
-          }
+        try {
+          await this.createNativeSessionFromUrl(event.url);
+        } catch (err: any) {
+          console.error("[DeepLink] Session restoration failed:", err);
+          this.setSyncState("error", "Failed resolving callback coordinates: " + (err.message || err));
         }
       });
     }
   }
 
-  private initWebPopupListener() {
-    if (typeof window !== "undefined") {
-      window.addEventListener("message", async (event: MessageEvent) => {
-        const origin = event.origin;
-        // Validate origin
-        if (!origin.endsWith('.run.app') && !origin.includes('localhost') && !origin.includes('127.0.0.1')) {
-          return;
-        }
-        if (event.data?.type === 'SUPABASE_OAUTH_SUCCESS') {
-          console.log("[WebPopup] Received login token message from popup!");
-          const hash = event.data.hash;
-          if (hash && hash.includes("access_token=")) {
-            try {
-              const cleanedHash = hash.startsWith("#") ? hash.substring(1) : hash;
-              const params = new URLSearchParams(cleanedHash);
-              const accessToken = params.get("access_token");
-              const refreshToken = params.get("refresh_token");
+  private getOAuthParamsFromUrl(url: string) {
+    const parsedUrl = new URL(url);
+    const queryParams = new URLSearchParams(parsedUrl.search);
+    const hashParams = new URLSearchParams(parsedUrl.hash.replace(/^#/, ""));
 
-              if (accessToken && refreshToken) {
-                this.setSyncState("syncing", "Restoring secure cloud profile from web popup...");
-                const supabase = getSupabase();
-                if (supabase) {
-                  const { error } = await supabase.auth.setSession({
-                    access_token: accessToken,
-                    refresh_token: refreshToken
-                  });
-                  if (error) {
-                    console.error("[WebPopup] setSession error:", error);
-                    this.setSyncState("error", "Authentic flow failed: " + error.message);
-                  } else {
-                    console.log("[WebPopup] Session restored successfully!");
-                    await this.triggerInitialSync();
-                  }
-                }
-              }
-            } catch (err: any) {
-              console.error("[WebPopup] Parse fallback error:", err);
-              this.setSyncState("error", "Failed resolving callback coordinates: " + err.message);
-            }
-          }
-        }
-      });
+    return {
+      code: queryParams.get("code") || hashParams.get("code"),
+      error: queryParams.get("error") || hashParams.get("error"),
+      errorDescription: queryParams.get("error_description") || hashParams.get("error_description"),
+      accessToken: queryParams.get("access_token") || hashParams.get("access_token"),
+      refreshToken: queryParams.get("refresh_token") || hashParams.get("refresh_token")
+    };
+  }
+
+  private async createNativeSessionFromUrl(url: string) {
+    const supabase = getSupabase();
+    if (!supabase || !url.startsWith("monarchspinner://")) return;
+
+    const params = this.getOAuthParamsFromUrl(url);
+    if (params.error) {
+      throw new Error(params.errorDescription || params.error);
     }
+
+    if (!params.code && !params.accessToken) return;
+
+    this.setSyncState("syncing", "Restoring secure cloud profile from deep link...");
+
+    if (params.code) {
+      const { error } = await supabase.auth.exchangeCodeForSession(params.code);
+      if (error) throw error;
+    } else if (params.accessToken && params.refreshToken) {
+      const { error } = await supabase.auth.setSession({
+        access_token: params.accessToken,
+        refresh_token: params.refreshToken
+      });
+      if (error) throw error;
+    }
+
+    console.log("[DeepLink] Session restored successfully.");
+    await CapBrowser.close();
+    await this.triggerInitialSync();
   }
 
   /**
@@ -507,7 +478,7 @@ class CloudSyncManager {
     const isNative = typeof window !== "undefined" && Capacitor.isNativePlatform();
 
     if (isNative) {
-      // Direct Native Redirect utilizing Custom Protocol monarchspinner://callback
+      // Native OAuth uses an external browser and returns through the custom app URL scheme.
       const { data, error } = await supabase.auth.signInWithOAuth({
         provider: "google",
         options: {
@@ -517,31 +488,18 @@ class CloudSyncManager {
       });
       if (error) throw error;
       if (data?.url) {
-        // Open authorization URL in user's browser securely
         await CapBrowser.open({ url: data.url, windowName: "_blank" });
       }
       return data;
     } else {
-      // Web redirection utilizing Popup window to avoid iframe block
+      // Web OAuth should use Supabase's normal top-level redirect flow.
       const { data, error } = await supabase.auth.signInWithOAuth({
         provider: "google",
         options: {
-          redirectTo: window.location.origin,
-          skipBrowserRedirect: true
+          redirectTo: window.location.origin
         }
       });
       if (error) throw error;
-      if (data?.url) {
-        const width = 600;
-        const height = 700;
-        const left = window.screen.width / 2 - width / 2;
-        const top = window.screen.height / 2 - height / 2;
-        window.open(
-          data.url,
-          "google_oauth_popup",
-          `width=${width},height=${height},left=${left},top=${top},status=0,menubar=0,toolbar=0`
-        );
-      }
       return data;
     }
   }

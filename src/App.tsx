@@ -1238,19 +1238,29 @@ export default function App() {
       }
     });
 
+    const applyAuthSession = (session: any) => {
+      if (session?.user) {
+        setIsLoggedIn(true);
+        setIsGuest(false);
+        localStorage.setItem("monarch_logged_v10", "true");
+        localStorage.setItem("monarch_is_guest_v10", "false");
+        return true;
+      }
+
+      setIsLoggedIn(false);
+      setIsGuest(false);
+      localStorage.setItem("monarch_logged_v10", "false");
+      localStorage.setItem("monarch_is_guest_v10", "false");
+      return false;
+    };
+
     const initializeAppAndSession = async () => {
       const supabase = getSupabase();
       if (supabase) {
         try {
           const { data: { session } } = await supabase.auth.getSession();
-          if (session?.user) {
+          if (applyAuthSession(session)) {
             console.log("Active Supabase session recovered silently on app launch!");
-            setIsLoggedIn(true);
-            setIsGuest(false);
-            localStorage.setItem("monarch_logged_v10", "true");
-            localStorage.setItem("monarch_is_guest_v10", "false");
-            
-            // trigger background download & comparison
             cloudSync.triggerInitialSync();
             return;
           }
@@ -1261,12 +1271,23 @@ export default function App() {
       
       // On fresh app launch / cold launch, if no active Google/Supabase session exists,
       // we ALWAYS require explicit login / guest mode selection.
-      setIsLoggedIn(false);
-      setIsGuest(false);
-      localStorage.setItem("monarch_is_guest_v10", "false");
+      applyAuthSession(null);
     };
 
     initializeAppAndSession();
+
+    const supabase = getSupabase();
+    const { data: { subscription } = { subscription: null } } = supabase
+      ? supabase.auth.onAuthStateChange((event: string, session: any) => {
+          if (event === "SIGNED_IN" || event === "INITIAL_SESSION") {
+            if (applyAuthSession(session)) {
+              cloudSync.triggerInitialSync();
+            }
+          } else if (event === "SIGNED_OUT") {
+            applyAuthSession(null);
+          }
+        })
+      : { data: { subscription: null } };
 
     // Launch sequence timing control (6.0s splash -> loading screen / login portal)
     const splashTimer = setTimeout(() => {
@@ -1276,7 +1297,10 @@ export default function App() {
       setShowStartupLoader(hasSession);
     }, 6000);
 
-    return () => clearTimeout(splashTimer);
+    return () => {
+      clearTimeout(splashTimer);
+      subscription?.unsubscribe();
+    };
   }, []);
 
   // Synchronize Quest Database with cloud storage on app mount

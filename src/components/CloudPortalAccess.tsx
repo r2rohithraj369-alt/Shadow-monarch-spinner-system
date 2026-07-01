@@ -85,11 +85,13 @@ export default function CloudPortalAccess({
         }
       });
 
-      const { data: { subscription } } = supabase.auth.onAuthStateChange((_event: any, session: any) => {
-        if (session?.user && !isGuestMode) {
+      const { data: { subscription } } = supabase.auth.onAuthStateChange((event: any, session: any) => {
+        if ((event === "SIGNED_IN" || event === "INITIAL_SESSION") && session?.user && !isGuestMode) {
+          setIsLoading(false);
           setCurrentUser(session.user);
           onReactLogin(session.user.email);
-        } else {
+        } else if (event === "SIGNED_OUT") {
+          setIsLoading(false);
           setCurrentUser(null);
           if (!isGuestMode) {
             onReactLogout();
