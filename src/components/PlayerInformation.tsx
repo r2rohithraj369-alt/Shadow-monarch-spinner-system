@@ -14,6 +14,7 @@ import { playSystemClick, playSystemDing } from "../utils/audio";
 import PlayerAvatar from "./PlayerAvatar";
 import ChangePhotoModal from "./ChangePhotoModal";
 import { getSupabase } from "../utils/supabaseClient";
+import { AttributeEngine } from "../utils/attributeEngine";
 
 interface PlayerInformationProps {
   player: PlayerProfile;
@@ -510,8 +511,63 @@ export default function PlayerInformation({
                       <Sparkles className="w-4 h-4 animate-spin-slow text-cyan-400" /> THE SCIENCE OF SPIN METRICS
                     </h4>
                     <p className="text-zinc-300 text-xs font-sans leading-relaxed">
-                      Attributes inside the Monarch mainframe are not mere scores; they represent the precise physics coordinates of your bowling release. Every delivery you pitch is calculated against these 9 attributes to determine the dispersion circle, deviation angles, ball lift, and batsman error margins. Understanding how each attribute functions is key to climbing from Rookie E-Rank to the apex of Shadow Monarch.
+                      Attributes inside the Monarch mainframe are not manually assigned scores; they are calculated from real Evolution Chamber, Pressure Chamber, Match Dungeon, quest, and skill-performance results. Every page reads the same centralized Attribute Engine values.
                     </p>
+                  </div>
+
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <h4 className="text-xs font-mono font-black uppercase text-white flex items-center gap-2">
+                        <BarChart2 className="w-4 h-4 text-cyan-400" />
+                        Player Attribute History
+                      </h4>
+                      <span className="text-[9px] text-zinc-500 font-mono uppercase">Live synchronized RPG stats</span>
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+                      {attributes.map((attr) => {
+                        const identity = AttributeEngine.getIdentity(attr.name);
+                        const topContributors = Object.entries(attr.contributors || {})
+                          .sort((a, b) => Number(b[1]) - Number(a[1]))
+                          .slice(0, 3);
+
+                        return (
+                          <div key={attr.name} className={`p-4 rounded-xl bg-zinc-950 border ${identity.border} ${identity.glow}`}>
+                            <div className="flex items-start justify-between gap-3 border-b border-zinc-900 pb-3">
+                              <div>
+                                <span className={`text-[11px] font-mono font-black uppercase ${identity.color}`}>{attr.name}</span>
+                                <p className="text-[9px] text-zinc-500 font-mono uppercase mt-0.5">{attr.rank || "E-Rank"} progression</p>
+                              </div>
+                              <span className={`text-2xl font-black font-mono ${identity.color}`}>{attr.value.toFixed(1)}</span>
+                            </div>
+
+                            <div className="grid grid-cols-2 gap-2 mt-3 text-[10px] font-mono">
+                              <span className="text-zinc-500">Highest <strong className="text-zinc-200">{(attr.highestEver || attr.value).toFixed(1)}</strong></span>
+                              <span className="text-zinc-500">Lowest <strong className="text-zinc-200">{(attr.lowestEver || attr.value).toFixed(1)}</strong></span>
+                              <span className="text-zinc-500">Today <strong className={identity.color}>+{(attr.todayGain || 0).toFixed(2)}</strong></span>
+                              <span className="text-zinc-500">Week <strong className={identity.color}>+{(attr.weeklyGain || 0).toFixed(2)}</strong></span>
+                              <span className="text-zinc-500">Month <strong className={identity.color}>+{(attr.monthlyGain || 0).toFixed(2)}</strong></span>
+                              <span className="text-zinc-500">Lifetime <strong className={identity.color}>+{(attr.lifetimeGain || 0).toFixed(2)}</strong></span>
+                            </div>
+
+                            <div className="mt-3 pt-3 border-t border-zinc-900">
+                              <p className="text-[10px] text-zinc-400 leading-relaxed">
+                                <strong className="text-zinc-200">Recent source:</strong> {attr.recentSource || "No completed session recorded yet."}
+                              </p>
+                              <div className="mt-2 space-y-1">
+                                {topContributors.length > 0 ? topContributors.map(([name, value]) => (
+                                  <div key={name} className="flex items-center justify-between text-[9px] font-mono text-zinc-500">
+                                    <span className="truncate pr-2">{name}</span>
+                                    <strong className={identity.color}>{Number(value).toFixed(Number(value) % 1 === 0 ? 0 : 2)}</strong>
+                                  </div>
+                                )) : (
+                                  <span className="text-[9px] font-mono text-zinc-600 uppercase">Awaiting gameplay contributors</span>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
                   </div>
 
                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 font-sans text-xs">

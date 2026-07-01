@@ -4,7 +4,7 @@ import {
   BookOpen, PlusCircle, Award, Swords, ArrowUpRight, 
   Flame, CheckCircle2, AlertTriangle, Play, Sparkles, 
   Compass, Zap, HelpCircle, ShieldAlert, Check, ShieldCheck,
-  Trash2, RefreshCw
+  Trash2, RefreshCw, Edit3, Archive, X
 } from "lucide-react";
 import { SkillItem, SkillRarity, PracticeQuest } from "../types";
 import { 
@@ -36,7 +36,7 @@ interface SkillInventoryProps {
     primaryPurpose?: "Wicket Taking" | "Dot Ball Pressure" | "Defensive Control" | "Attack" | "Deception";
     preferredLength?: "Full" | "Good Length" | "Short" | "Variable";
   }) => void;
-  onConfirmSkillEvolution: (id: string, newName: string, newRarity: SkillRarity, newLevel: number, attributeBoost: { name: string; value: number }) => void;
+  onConfirmSkillEvolution: (id: string, newName: string, newRarity: SkillRarity, newLevel: number) => void;
   onNavigateToTab: (tab: string) => void;
   onUpdateSkillsState?: React.Dispatch<React.SetStateAction<SkillItem[]>>;
   playerWickets: number;
@@ -87,8 +87,83 @@ export default function SkillInventory({
   const [trialVerificationInput, setTrialVerificationInput] = useState("");
   const [trialErrorMsg, setTrialErrorMsg] = useState("");
   const [trialSuccessMsg, setTrialSuccessMsg] = useState("");
+  const [secureAction, setSecureAction] = useState<null | { type: "EDIT" | "DELETE"; skill: SkillItem; step: "CONFIRM" | "PASSWORD" | "EDITOR"; error?: string }>(null);
+  const [adminCode, setAdminCode] = useState("");
+  const [editName, setEditName] = useState("");
+  const [editDescription, setEditDescription] = useState("");
+  const [editRarity, setEditRarity] = useState<SkillRarity>("COMMON");
 
   const selectedSkill = skills.find((s) => s.id === selectedSkillId) || skills[0];
+
+  const openSecureAction = (type: "EDIT" | "DELETE", skill: SkillItem) => {
+    playSystemClick();
+    setAdminCode("");
+    setSecureAction({ type, skill, step: "CONFIRM" });
+  };
+
+  const continueSecureAction = () => {
+    setAdminCode("");
+    setSecureAction((prev) => prev ? { ...prev, step: "PASSWORD", error: undefined } : prev);
+  };
+
+  const verifyAdminCode = () => {
+    if (!secureAction) return;
+    if (adminCode.trim() !== "369") {
+      playSystemError();
+      setSecureAction({ ...secureAction, error: "Access denied. Administrator code is incorrect." });
+      return;
+    }
+
+    if (secureAction.type === "DELETE") {
+      onUpdateSkillsState?.((prev) =>
+        prev.map((skill) =>
+          skill.id === secureAction.skill.id
+            ? {
+                ...skill,
+                archived: true,
+                archivedAt: new Date().toISOString(),
+                archiveReason: "Archived by administrator. Historical progression retained.",
+                history: [`Archived on ${new Date().toLocaleDateString()}. Progression references retained.`, ...skill.history]
+              }
+            : skill
+        )
+      );
+      playSystemDing();
+      setSecureAction(null);
+      setAdminCode("");
+      return;
+    }
+
+    setEditName(secureAction.skill.name);
+    setEditDescription(secureAction.skill.description || "");
+    setEditRarity(secureAction.skill.rarity);
+    setSecureAction({ ...secureAction, step: "EDITOR", error: undefined });
+  };
+
+  const saveSkillEdit = () => {
+    if (!secureAction || secureAction.type !== "EDIT") return;
+    const safeName = editName.trim();
+    if (!safeName) {
+      setSecureAction({ ...secureAction, error: "Skill name cannot be empty." });
+      return;
+    }
+
+    onUpdateSkillsState?.((prev) =>
+      prev.map((skill) =>
+        skill.id === secureAction.skill.id
+          ? {
+              ...skill,
+              name: safeName,
+              description: editDescription.trim() || skill.description,
+              rarity: editRarity,
+              history: [`Edited by administrator on ${new Date().toLocaleDateString()}.`, ...skill.history]
+            }
+          : skill
+      )
+    );
+    playSystemDing();
+    setSecureAction(null);
+  };
 
   const getRarityColor = (rarity: SkillRarity) => {
     switch (rarity) {
@@ -126,14 +201,14 @@ export default function SkillInventory({
   };
 
   const handleSynthesizeQuest = () => {
-    if (!selectedSkill) return;
+    if (!selectedSkill || selectedSkill.archived) return;
     playSystemClick();
     onGeneratePracticeQuest(selectedSkill.id, selectedSkill.name, selectedDifficulty, selectedChamberMode, selectedOvers);
   };
 
   // Physical breakthrough pass - keeps Actual Base Name pristine now!
   const handleTriggerEvolutionTrial = () => {
-    if (!selectedSkill) return;
+    if (!selectedSkill || selectedSkill.archived) return;
     playSystemClick();
     setTrialErrorMsg("");
     setTrialSuccessMsg("");
@@ -212,9 +287,7 @@ export default function SkillInventory({
     const nextLevel = selectedSkill.level + 2;
 
     // Attributes boosted list
-    const boostAttr = { name: "CONTROL", value: 5 };
-
-    setTrialSuccessMsg(`EVOLUTION PASS DETECTED! Unlocked ${nextRarity} Tier, Skill Level upgraded to LV ${nextLevel}, +5 CONTROL point permanently boosted!`);
+    setTrialSuccessMsg(`EVOLUTION PASS DETECTED! Unlocked ${nextRarity} Tier and upgraded Skill Level to LV ${nextLevel}. Attribute growth remains performance-derived.`);
     
     // Clear the active trial parameters so it can start fresh when they master this current level!
     if (onUpdateSkillsState) {
@@ -236,7 +309,7 @@ export default function SkillInventory({
       );
     }
 
-    onConfirmSkillEvolution(selectedSkill.id, evolvedName, nextRarity, nextLevel, boostAttr);
+    onConfirmSkillEvolution(selectedSkill.id, evolvedName, nextRarity, nextLevel);
   };
 
   // Retrieve quests only targeting the selected skill (flexible match by ID, name, or skillName)
@@ -250,6 +323,114 @@ export default function SkillInventory({
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 p-6 bg-[#080808]/95 border border-purple-500/10 rounded-2xl relative overflow-hidden">
+      <AnimatePresence>
+        {secureAction && (
+          <motion.div
+            className="fixed inset-0 z-[80] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+          >
+            <motion.div
+              className="w-full max-w-md bg-[#080808] border border-purple-500/30 rounded-xl p-5 shadow-[0_0_35px_rgba(123,47,255,0.25)]"
+              initial={{ scale: 0.96, y: 12 }}
+              animate={{ scale: 1, y: 0 }}
+              exit={{ scale: 0.96, y: 12 }}
+            >
+              <div className="flex items-start justify-between gap-3 border-b border-gray-900 pb-3">
+                <div>
+                  <h4 className="text-sm font-black font-mono text-white uppercase flex items-center gap-2">
+                    <ShieldAlert className="w-4 h-4 text-amber-400" />
+                    {secureAction.step === "EDITOR" ? "Skill Editor" : secureAction.type === "EDIT" ? "Edit Skill" : "Archive Skill"}
+                  </h4>
+                  <p className="text-[10px] text-gray-500 font-mono uppercase mt-1">{secureAction.skill.name}</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setSecureAction(null)}
+                  className="p-1 rounded border border-gray-800 text-gray-400 hover:text-white hover:border-gray-600"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              {secureAction.step === "CONFIRM" && (
+                <div className="pt-4 space-y-4">
+                  <p className="text-xs text-gray-300 leading-relaxed">
+                    {secureAction.type === "EDIT"
+                      ? "Editing a skill changes its permanent data. Do you wish to continue?"
+                      : "Deleting a skill will archive it instead of destroying progression references. Do you wish to continue?"}
+                  </p>
+                  <div className="flex justify-end gap-2">
+                    <button type="button" onClick={() => setSecureAction(null)} className="px-3 py-2 rounded border border-gray-800 text-gray-400 text-xs font-mono uppercase hover:text-white">Cancel</button>
+                    <button type="button" onClick={continueSecureAction} className="px-3 py-2 rounded border border-cyan-500/30 bg-cyan-500/10 text-cyan-300 text-xs font-mono uppercase hover:bg-cyan-400 hover:text-black">Continue</button>
+                  </div>
+                </div>
+              )}
+
+              {secureAction.step === "PASSWORD" && (
+                <div className="pt-4 space-y-4">
+                  <div>
+                    <label className="block text-[10px] font-mono text-gray-400 uppercase mb-1">Security Verification</label>
+                    <input
+                      type="password"
+                      value={adminCode}
+                      onChange={(event) => setAdminCode(event.target.value)}
+                      placeholder="Enter Administrator Code"
+                      className="w-full bg-black border border-gray-800 rounded px-3 py-2 text-sm text-white font-mono focus:outline-none focus:border-cyan-500"
+                    />
+                    {secureAction.error && <p className="text-[10px] text-red-400 mt-2 font-mono">{secureAction.error}</p>}
+                  </div>
+                  <div className="flex justify-end gap-2">
+                    <button type="button" onClick={() => setSecureAction(null)} className="px-3 py-2 rounded border border-gray-800 text-gray-400 text-xs font-mono uppercase hover:text-white">Cancel</button>
+                    <button type="button" onClick={verifyAdminCode} className="px-3 py-2 rounded border border-purple-500/30 bg-purple-500/10 text-purple-300 text-xs font-mono uppercase hover:bg-purple-400 hover:text-black">Verify</button>
+                  </div>
+                </div>
+              )}
+
+              {secureAction.step === "EDITOR" && (
+                <div className="pt-4 space-y-4">
+                  <div>
+                    <label className="block text-[10px] font-mono text-gray-400 uppercase mb-1">Skill Name</label>
+                    <input
+                      value={editName}
+                      onChange={(event) => setEditName(event.target.value)}
+                      className="w-full bg-black border border-gray-800 rounded px-3 py-2 text-sm text-white font-mono focus:outline-none focus:border-cyan-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-mono text-gray-400 uppercase mb-1">Description</label>
+                    <textarea
+                      value={editDescription}
+                      onChange={(event) => setEditDescription(event.target.value)}
+                      rows={4}
+                      className="w-full bg-black border border-gray-800 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-cyan-500 resize-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-mono text-gray-400 uppercase mb-1">Rarity</label>
+                    <select
+                      value={editRarity}
+                      onChange={(event) => setEditRarity(event.target.value as SkillRarity)}
+                      className="w-full bg-black border border-gray-800 rounded px-3 py-2 text-sm text-white font-mono focus:outline-none focus:border-cyan-500"
+                    >
+                      <option value="COMMON">COMMON</option>
+                      <option value="RARE">RARE</option>
+                      <option value="EPIC">EPIC</option>
+                      <option value="LEGENDARY">LEGENDARY</option>
+                    </select>
+                    {secureAction.error && <p className="text-[10px] text-red-400 mt-2 font-mono">{secureAction.error}</p>}
+                  </div>
+                  <div className="flex justify-end gap-2">
+                    <button type="button" onClick={() => setSecureAction(null)} className="px-3 py-2 rounded border border-gray-800 text-gray-400 text-xs font-mono uppercase hover:text-white">Cancel</button>
+                    <button type="button" onClick={saveSkillEdit} className="px-3 py-2 rounded border border-green-500/30 bg-green-500/10 text-green-300 text-xs font-mono uppercase hover:bg-green-400 hover:text-black">Save Skill</button>
+                  </div>
+                </div>
+              )}
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
       
       {/* Visual background lights */}
       <div className="absolute right-0 bottom-0 pointer-events-none w-80 h-80 bg-purple-950/5 rounded-full filter blur-[120px]" />
@@ -435,7 +616,7 @@ export default function SkillInventory({
                   isSelected
                     ? "bg-[#101010] border-[#7B2FFF]/60 shadow-[0_0_15px_rgba(123,47,255,0.08)]"
                     : "bg-black border-gray-900 hover:border-gray-800 hover:bg-[#0c0c0c]"
-                }`}
+                } ${skill.archived ? "opacity-60" : ""}`}
               >
                 {isBreakthroughReady && (
                   <div className="absolute top-0 inset-x-0 h-[2px] bg-[#FFD700] animate-pulse shadow-[0_0_10px_#FFA500]" />
@@ -446,6 +627,11 @@ export default function SkillInventory({
                   <div>
                     <h4 className="text-xs font-bold font-mono tracking-wider text-gray-200 group-hover:text-white uppercase flex items-center gap-1.5">
                       {skill.name}
+                      {skill.archived && (
+                        <span className="text-[8px] text-amber-300 border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 rounded">
+                          ARCHIVED
+                        </span>
+                      )}
                     </h4>
                     
                     {/* DYNAMIC TITLE DISPLAY */}
@@ -465,6 +651,30 @@ export default function SkillInventory({
                   <span className={`text-[8px] font-mono px-1.5 py-0.5 rounded border uppercase ${getRarityColor(skill.rarity)}`}>
                     {skill.rarity}
                   </span>
+                  <div className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        openSecureAction("EDIT", skill);
+                      }}
+                      className="p-1 rounded border border-cyan-500/20 text-cyan-400 bg-cyan-500/10 hover:bg-cyan-400 hover:text-black transition-colors"
+                      title="Edit skill"
+                    >
+                      <Edit3 className="w-3 h-3" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        openSecureAction("DELETE", skill);
+                      }}
+                      className="p-1 rounded border border-red-500/20 text-red-400 bg-red-500/10 hover:bg-red-400 hover:text-black transition-colors"
+                      title="Archive skill"
+                    >
+                      <Archive className="w-3 h-3" />
+                    </button>
+                  </div>
                   {isBreakthroughReady && (
                     <span className="text-[8px] font-mono text-yellow-400 font-bold tracking-widest leading-none block animate-bounce">
                       BREAKREADY
@@ -499,6 +709,11 @@ export default function SkillInventory({
                   </div>
                   <h2 className="text-lg font-black font-mono tracking-wider text-white uppercase mt-1.5 flex items-center gap-2">
                     {selectedSkill.name}
+                    {selectedSkill.archived && (
+                      <span className="text-[9px] text-amber-300 border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 rounded">
+                        ARCHIVED
+                      </span>
+                    )}
                   </h2>
                   <div className="mt-1 flex items-center gap-1.5">
                     <span className="text-[10px] font-mono text-gray-500 uppercase">UNIVERSAL DEVELOPMENT TITLE:</span>
@@ -539,6 +754,11 @@ export default function SkillInventory({
                 <p className="text-xs text-gray-300 leading-relaxed italic">
                   "{selectedSkill.description || "Synthesized spin flight trajectory with high rotational frequency."}"
                 </p>
+                {selectedSkill.archived && (
+                  <p className="mt-3 text-[10px] text-amber-300 font-mono border border-amber-500/20 bg-amber-500/10 rounded px-3 py-2">
+                    This skill has been archived. Historical XP, quests, logs, achievements, and progression references are retained.
+                  </p>
+                )}
               </div>
 
               {/* PRACTICE QUESTS MATRIX AND CONTROLS (REPLACES DUMMY AI DRILL PANEL) */}
@@ -739,7 +959,8 @@ export default function SkillInventory({
                     <button
                       type="button"
                       onClick={handleSynthesizeQuest}
-                      className="w-full sm:w-auto px-6 py-2 bg-gradient-to-r from-purple-950/50 to-indigo-950/50 border border-[#7B2FFF]/50 hover:border-purple-400 text-purple-300 hover:text-white font-mono text-xs font-bold rounded transition cursor-pointer uppercase tracking-widest shadow-[0_0_12px_rgba(123,47,255,0.15)] hover:shadow-[0_0_15px_rgba(123,47,255,0.35)]"
+                      disabled={selectedSkill.archived}
+                      className={`w-full sm:w-auto px-6 py-2 bg-gradient-to-r from-purple-950/50 to-indigo-950/50 border border-[#7B2FFF]/50 hover:border-purple-400 text-purple-300 hover:text-white font-mono text-xs font-bold rounded transition uppercase tracking-widest shadow-[0_0_12px_rgba(123,47,255,0.15)] hover:shadow-[0_0_15px_rgba(123,47,255,0.35)] ${selectedSkill.archived ? "opacity-40 cursor-not-allowed" : "cursor-pointer"}`}
                     >
                       SYNTHESIZE SKILL QUEST
                     </button>
@@ -763,9 +984,9 @@ export default function SkillInventory({
 
                 <button
                   onClick={handleTriggerEvolutionTrial}
-                  disabled={selectedSkill.mastery < 1000}
+                  disabled={selectedSkill.mastery < 1000 || selectedSkill.archived}
                   className={`py-3.5 rounded font-mono text-xs font-black tracking-widest uppercase flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
-                    selectedSkill.mastery >= 1000
+                    selectedSkill.mastery >= 1000 && !selectedSkill.archived
                       ? "bg-gradient-to-r from-yellow-600 to-amber-700 border border-yellow-500/40 text-white shadow-[0_0_15px_#D4AF37]"
                       : "bg-[#0a0a0a] border-gray-900 text-gray-600 cursor-not-allowed border opacity-20"
                   }`}

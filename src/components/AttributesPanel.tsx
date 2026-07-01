@@ -11,22 +11,27 @@ import {
   Navigation, 
   RefreshCw, 
   ArrowUpCircle,
-  Eye
+  Eye,
+  Shuffle,
+  VenetianMask,
+  Crown,
+  HeartPulse,
+  Sparkles
 } from "lucide-react";
+import { AttributeEngine } from "../utils/attributeEngine";
 
 interface AttributesPanelProps {
   attributes: Attribute[];
-  onBoostAttribute?: (name: string) => void;
 }
 
-export default function AttributesPanel({ attributes = [], onBoostAttribute }: AttributesPanelProps) {
+export default function AttributesPanel({ attributes = [] }: AttributesPanelProps) {
   // Map icons based on attribute name
   const getIcon = (name: string) => {
     switch (name.toUpperCase()) {
       case "ACCURACY":
         return <Target className="w-4 h-4 text-blue-400" />;
       case "CONTROL":
-        return <Compass className="w-4 h-4 text-purple-400" />;
+        return <Compass className="w-4 h-4 text-orange-400" />;
       case "CONSISTENCY":
         return <Repeat className="w-4 h-4 text-emerald-400" />;
       case "ECONOMY":
@@ -36,78 +41,23 @@ export default function AttributesPanel({ attributes = [], onBoostAttribute }: A
       case "FLIGHT":
         return <Wind className="w-4 h-4 text-cyan-400" />;
       case "DRIFT":
-        return <Navigation className="w-4 h-4 text-indigo-400" />;
+        return <Navigation className="w-4 h-4 text-violet-400" />;
       case "REVOLUTIONS":
         return <RefreshCw className="w-4 h-4 text-orange-400" />;
       case "BOUNCE":
         return <ArrowUpCircle className="w-4 h-4 text-pink-400" />;
+      case "VARIATION":
+        return <Shuffle className="w-4 h-4 text-fuchsia-400" />;
+      case "DECEPTION":
+        return <VenetianMask className="w-4 h-4 text-indigo-400" />;
+      case "DOMINANCE":
+        return <Crown className="w-4 h-4 text-rose-400" />;
+      case "RESILIENCE":
+        return <HeartPulse className="w-4 h-4 text-green-400" />;
+      case "ARCANE MASTERY":
+        return <Sparkles className="w-4 h-4 text-white" />;
       default:
         return <Eye className="w-4 h-4 text-gray-400" />;
-    }
-  };
-
-  const getBarColorClass = (name: string) => {
-    switch (name.toUpperCase()) {
-      case "ACCURACY":
-        return "bg-gradient-to-r from-blue-700 to-blue-500";
-      case "CONTROL":
-        return "bg-gradient-to-r from-purple-700 to-purple-500";
-      case "CONSISTENCY":
-        return "bg-gradient-to-r from-emerald-700 to-emerald-500";
-      case "ECONOMY":
-        return "bg-gradient-to-r from-amber-600 to-amber-500";
-      case "PRESSURE HANDLING":
-        return "bg-gradient-to-r from-red-700 to-red-500";
-      case "FLIGHT":
-        return "bg-gradient-to-r from-cyan-600 to-cyan-400";
-      case "DRIFT":
-        return "bg-gradient-to-r from-indigo-600 to-indigo-400";
-      case "REVOLUTIONS":
-        return "bg-gradient-to-r from-orange-600 to-orange-400";
-      case "BOUNCE":
-        return "bg-gradient-to-r from-pink-600 to-pink-400";
-      default:
-        return "bg-gradient-to-r from-gray-600 to-gray-400";
-    }
-  };
-
-  const getShadowColorStyle = (name: string) => {
-    switch (name.toUpperCase()) {
-      case "ACCURACY":
-        return "shadow-[0_0_12px_rgba(59,130,246,0.5)]";
-      case "CONTROL":
-        return "shadow-[0_0_12px_rgba(168,85,247,0.5)]";
-      case "CONSISTENCY":
-        return "shadow-[0_0_12px_rgba(16,185,129,0.5)]";
-      case "ECONOMY":
-        return "shadow-[0_0_12px_rgba(245,158,11,0.5)]";
-      case "PRESSURE HANDLING":
-        return "shadow-[0_0_12px_rgba(239,68,68,0.5)]";
-      case "FLIGHT":
-        return "shadow-[0_0_12px_rgba(6,182,212,0.5)]";
-      case "DRIFT":
-        return "shadow-[0_0_12px_rgba(99,102,241,0.5)]";
-      case "REVOLUTIONS":
-        return "shadow-[0_0_12px_rgba(249,115,22,0.5)]";
-      case "BOUNCE":
-        return "shadow-[0_0_12px_rgba(236,72,153,0.5)]";
-      default:
-        return "shadow-[0_0_12px_rgba(156,163,175,0.5)]";
-    }
-  };
-
-  const getTextColor = (name: string) => {
-    switch (name.toUpperCase()) {
-      case "ACCURACY": return "text-blue-400";
-      case "CONTROL": return "text-purple-400";
-      case "CONSISTENCY": return "text-emerald-400";
-      case "ECONOMY": return "text-amber-400";
-      case "PRESSURE HANDLING": return "text-red-400";
-      case "FLIGHT": return "text-cyan-400";
-      case "DRIFT": return "text-indigo-400";
-      case "REVOLUTIONS": return "text-orange-400";
-      case "BOUNCE": return "text-pink-400";
-      default: return "text-gray-400";
     }
   };
 
@@ -126,6 +76,7 @@ export default function AttributesPanel({ attributes = [], onBoostAttribute }: A
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
         {attributes.map((attr) => {
+          const identity = AttributeEngine.getIdentity(attr.name);
           const isZeroGrowth = !attr.growthRate || 
                                attr.growthRate === "0%" || 
                                attr.growthRate === "+0.0%" || 
@@ -134,32 +85,26 @@ export default function AttributesPanel({ attributes = [], onBoostAttribute }: A
           return (
             <div 
               key={attr.name} 
-              className="group relative bg-[#050505] border border-gray-900 hover:border-cyan-500/20 rounded-xl p-5 transition-all duration-300 flex flex-col justify-between hover:shadow-[0_0_15px_rgba(6,182,212,0.03)]"
+              className={`group relative bg-[#050505] border ${identity.border} rounded-xl p-5 transition-all duration-300 flex flex-col justify-between ${identity.glow}`}
+              title={`${attr.name}: ${attr.recentSource || attr.description}`}
             >
               <div className="space-y-4">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2.5">
-                    <div className="p-2 rounded bg-black border border-gray-800/80 group-hover:border-cyan-500/30 group-hover:bg-cyan-950/10 transition-all duration-300">
+                    <div className={`p-2 rounded border ${identity.border} ${identity.bg} transition-all duration-300`}>
                       {getIcon(attr.name)}
                     </div>
-                    <span className="text-[11px] font-black font-mono text-gray-400 tracking-wider uppercase group-hover:text-gray-200 transition-colors">
-                      {attr.name}
-                    </span>
+                    <div>
+                      <span className={`text-[11px] font-black font-mono tracking-wider uppercase transition-colors ${identity.color}`}>
+                        {attr.name}
+                      </span>
+                      <span className="text-[9px] text-gray-500 font-mono block uppercase">{attr.rank || "E-Rank"}</span>
+                    </div>
                   </div>
-                  
-                  {onBoostAttribute && (
-                    <button 
-                      onClick={() => onBoostAttribute(attr.name)}
-                      className="opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded bg-cyan-950/30 border border-cyan-500/30 text-cyan-400 hover:bg-cyan-500 hover:text-black cursor-pointer"
-                      title={`Manually train ${attr.name}`}
-                    >
-                      <ArrowUpCircle className="w-3.5 h-3.5" />
-                    </button>
-                  )}
                 </div>
 
                 <div className="flex items-baseline gap-2 pt-1">
-                  <span className={`text-3xl font-black font-mono tracking-tight ${getTextColor(attr.name)}`}>
+                  <span className={`text-3xl font-black font-mono tracking-tight ${identity.color}`}>
                     {attr.value.toFixed(1)}
                   </span>
                   {!isZeroGrowth && (
@@ -167,6 +112,18 @@ export default function AttributesPanel({ attributes = [], onBoostAttribute }: A
                       {attr.growthRate}
                     </span>
                   )}
+                </div>
+                <div className="h-2 bg-black/70 rounded-full overflow-hidden border border-gray-900">
+                  <motion.div
+                    className={`${identity.bg} h-full`}
+                    initial={{ width: 0 }}
+                    animate={{ width: `${Math.min(100, attr.value / 10)}%` }}
+                    transition={{ duration: 0.55 }}
+                  />
+                </div>
+                <div className="grid grid-cols-2 gap-2 text-[9px] font-mono text-gray-500">
+                  <span>LAST <strong className={identity.color}>+{(attr.lastSessionGain || 0).toFixed(2)}</strong></span>
+                  <span>TODAY <strong className={identity.color}>+{(attr.todayGain || 0).toFixed(2)}</strong></span>
                 </div>
               </div>
 

@@ -4,6 +4,24 @@ export interface Attribute {
   growthRate: string; // e.g., "+3.2%"
   trend: "ascending" | "steady" | "critical";
   description: string;
+  rank?: string;
+  highestEver?: number;
+  lowestEver?: number;
+  todayGain?: number;
+  weeklyGain?: number;
+  monthlyGain?: number;
+  lifetimeGain?: number;
+  lastSessionGain?: number;
+  recentSource?: string;
+  contributors?: Record<string, number>;
+  history?: Array<{
+    id: string;
+    date: string;
+    source: string;
+    gain: number;
+    value: number;
+    contributors: Record<string, number>;
+  }>;
 }
 
 export interface PlayerProfile {
@@ -75,6 +93,9 @@ export interface SkillItem {
   trialProgressRunsLimitMet?: boolean;
   trialProgressPressureMet?: boolean;
   trialProgressDungeonMet?: boolean;
+  archived?: boolean;
+  archivedAt?: string;
+  archiveReason?: string;
 }
 
 export type DirectiveCategory = "EVOLUTION" | "ASCENSION" | "SECRET" | "EMERGENCY";
@@ -225,4 +246,3 @@ export interface PracticeQuest {
   status?: "LOCKED" | "UNLOCKED" | "PENDING" | "ACTIVE" | "COMPLETED";
   overs?: number | string;
 }
-

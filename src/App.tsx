@@ -49,6 +49,7 @@ import PlayerAvatar from "./components/PlayerAvatar";
 import appLogo from "./assets/images/app_logo_1782646701079.jpg";
 import SettingsPage from "./components/SettingsPage";
 import { SettingsManager, AppSettings, DEFAULT_SETTINGS, BACKGROUNDS, BUILT_IN_THEMES } from "./utils/settingsManager";
+import { AttributeEngine } from "./utils/attributeEngine";
 
 import {
   PlayerProfile,
@@ -151,17 +152,7 @@ const INITIAL_PLAYER: PlayerProfile = {
   lifetimePlayerXp: 0,
 };
 
-const INITIAL_ATTRIBUTES: Attribute[] = [
-  { name: "Accuracy", value: 12.0, growthRate: "+0.0%", trend: "steady", description: "The margin of error in landing coordinates relative to the optimal length slot." },
-  { name: "Control", value: 10.0, growthRate: "+0.0%", trend: "steady", description: "Wrist snap control and direct trajectory adjustments during release." },
-  { name: "Consistency", value: 8.0, growthRate: "+0.0%", trend: "steady", description: "The ability to replicate precise delivery arcs over consecutive overs." },
-  { name: "Economy", value: 5.0, growthRate: "+0.0%", trend: "steady", description: "Batters restriction factor, limiting scoring angles and boundary chances." },
-  { name: "Pressure Handling", value: 3.0, growthRate: "+0.0%", trend: "steady", description: "Composure index under heavy target chase or aggressive striker load." },
-  { name: "Flight", value: 2.0, growthRate: "+0.0%", trend: "steady", description: "The deceleration coefficient of flight, forcing misjudged step-out lunges." },
-  { name: "Drift", value: 2.0, growthRate: "+0.0%", trend: "steady", description: "Lateral aerodynamic movement of the ball through the air before bounce." },
-  { name: "Revolutions", value: 1.0, growthRate: "+0.0%", trend: "steady", description: "Fanning spin rate (RPM), amplifying sharp break deviations off the pitch." },
-  { name: "Bounce", value: 1.0, growthRate: "+0.0%", trend: "steady", description: "Vertical pitch impact recoil, squeezing batsmen roll or trapping them high." },
-];
+const INITIAL_ATTRIBUTES: Attribute[] = AttributeEngine.createInitialAttributes();
 
 const INITIAL_SKILLS: SkillItem[] = [
   {
@@ -1080,7 +1071,7 @@ export default function App() {
 
   const [attributes, setAttributes] = useState<Attribute[]>(() => {
     const saved = localStorage.getItem("monarch_attributes_v10");
-    return saved ? JSON.parse(saved) : INITIAL_ATTRIBUTES;
+    return saved ? AttributeEngine.ensureCompleteAttributes(JSON.parse(saved)) : INITIAL_ATTRIBUTES;
   });
 
   const [skills, setSkills] = useState<SkillItem[]>(() => {
@@ -1219,7 +1210,7 @@ export default function App() {
   useEffect(() => {
     cloudSync.registerStateUpdater((profile: UnifiedProfile) => {
       if (profile.player) setPlayer(profile.player);
-      if (profile.attributes) setAttributes(profile.attributes);
+      if (profile.attributes) setAttributes(AttributeEngine.ensureCompleteAttributes(profile.attributes));
       if (profile.skills) setSkills(profile.skills);
       if (profile.directives) setDirectives(profile.directives);
       if (profile.dungeons) setDungeons(profile.dungeons);
@@ -1444,17 +1435,7 @@ export default function App() {
       lifetimeSkillXp: 0,
       lifetimePlayerXp: 0,
     });
-    setAttributes([
-      { name: "Accuracy", value: 12.0, growthRate: "0%", trend: "steady", description: "The margin of error in landing coordinates relative to the optimal length slot." },
-      { name: "Control", value: 10.0, growthRate: "0%", trend: "steady", description: "Wrist snap control and direct trajectory adjustments during release." },
-      { name: "Consistency", value: 8.0, growthRate: "0%", trend: "steady", description: "The ability to replicate precise delivery arcs over consecutive overs." },
-      { name: "Economy", value: 5.0, growthRate: "0%", trend: "steady", description: "Batters restriction factor, limiting scoring angles and boundary chances." },
-      { name: "Pressure Handling", value: 3.0, growthRate: "0%", trend: "steady", description: "Composure index under heavy target chase or aggressive striker load." },
-      { name: "Flight", value: 2.0, growthRate: "0%", trend: "steady", description: "The deceleration coefficient of flight, forcing misjudged step-out lunges." },
-      { name: "Drift", value: 2.0, growthRate: "0%", trend: "steady", description: "Lateral aerodynamic movement of the ball through the air before bounce." },
-      { name: "Revolutions", value: 1.0, growthRate: "0%", trend: "steady", description: "Fanning spin rate (RPM), amplifying sharp break deviations off the pitch." },
-      { name: "Bounce", value: 1.0, growthRate: "0%", trend: "steady", description: "Vertical pitch impact recoil, squeezing batsmen roll or trapping them high." },
-    ]);
+    setAttributes(INITIAL_ATTRIBUTES);
     setSkills([
       { id: "s1", name: "LEG BREAK", level: 1, mastery: 0, rarity: "COMMON", description: "The Foundation of All Destruction. Pure aerodynamic side-spin flight path that breaks wide away from the right-handed batsman threat vector.", evolutionRequirements: "Reach Level 15 player and 850 Kinetic Mastery", history: ["Holographic neural matrix initial sync successful"] },
       { id: "s2", name: "GOOGLY", level: 1, mastery: 0, rarity: "RARE", description: "The Unseen Traitor. Deceptive wrist spin sequence spinning sharply in towards the right-handed striker from the off-side drift line.", evolutionRequirements: "Complete Ascension Trial #1 and 650 Deception Mastery", history: ["Holographic guest session initiated."] },
@@ -1910,13 +1891,6 @@ export default function App() {
             ...prevLogs,
           ]);
 
-          // Boost attributes random allotment
-          setAttributes((prevAttrs) =>
-            prevAttrs.map((attr) => ({
-              ...attr,
-              value: Math.min(attr.value + Math.floor(Math.random() * 3) + 1, 1000),
-            }))
-          );
         }, 150);
       }
 
@@ -2045,71 +2019,7 @@ export default function App() {
       );
     }
 
-    // Update corresponding attributes with exact mathematical rules out of 1000 max.
-    // Gains are balanced to be small (e.g. 0.05 to 0.40) to make it difficult/challenging to gain even 1 full number,
-    // reflecting how incredibly powerful high-level spinners are.
-    setAttributes((prev) =>
-      prev.map((attr) => {
-        const lowerName = attr.name.toLowerCase();
-        let addVal = 0.05; // Friendly, encouraging baseline
-
-        const balls = report.balls || [];
-        const perfectCount = report.perfectBallsCount || 0;
-        const closeCount = balls.filter((b: any) => b.length === "Close Ball").length;
-        const shortOrFullTossCount = balls.filter((b: any) => b.length === "Short Ball" || b.length === "Full Toss").length;
-        const totalWides = report.widesCount || 0;
-        const totalNoBalls = report.noBallsCount || 0;
-        const dots = report.dotsCount || 0;
-        const efficiency = report.combatEfficiency || 0;
-
-        if (lowerName === "accuracy") {
-          addVal += perfectCount * 0.04 + closeCount * 0.02;
-        } else if (lowerName === "control") {
-          addVal += perfectCount * 0.03 + (totalWides + totalNoBalls === 0 ? 0.05 : 0);
-          if (shortOrFullTossCount <= 1) addVal += 0.05;
-        } else if (lowerName === "consistency") {
-          let maxConsec = 0;
-          let currentConsec = 0;
-          balls.forEach((b: any) => {
-            if (["Perfect Ball", "Close Ball", "Good Length"].includes(b.length)) {
-              currentConsec++;
-              if (currentConsec > maxConsec) maxConsec = currentConsec;
-            } else {
-              currentConsec = 0;
-            }
-          });
-          addVal += maxConsec * 0.02;
-        } else if (lowerName === "economy") {
-          const runRate = report.isMatchSim ? (report.runsConceded || 0) / (report.oversCount || 1) : 0;
-          if (report.isMatchSim) {
-            addVal += Math.max(0, 0.15 - runRate * 0.02);
-          } else {
-            addVal += dots * 0.02;
-          }
-        } else if (lowerName === "pressure handling") {
-          if (isPressure) {
-            addVal += 0.15 + (report.pressureScenarioSuccess ? 0.10 : 0);
-          }
-          const hitForBoundary = balls.some((b: any) => b.runsConceded && b.runsConceded >= 4);
-          if (hitForBoundary && efficiency >= 75) addVal += 0.08;
-        } else if (lowerName === "flight") {
-          const flightedCount = balls.filter((b: any) => ["LEG BREAK", "GOOGLY", "FLIPPER"].includes(b.skillName?.toUpperCase())).length;
-          addVal += flightedCount * 0.02;
-        } else if (lowerName === "drift") {
-          const driftCount = balls.filter((b: any) => ["LEG BREAK", "GOOGLY", "SLIDER"].includes(b.skillName?.toUpperCase())).length;
-          addVal += driftCount * 0.02;
-        } else if (lowerName === "revolutions") {
-          const revCount = balls.filter((b: any) => ["TOP SPINNER", "SLIDER"].includes(b.skillName?.toUpperCase())).length;
-          addVal += revCount * 0.03;
-        } else if (lowerName === "bounce") {
-          const bounceCount = balls.filter((b: any) => ["TOP SPINNER", "SLIDER", "FLIPPER"].includes(b.skillName?.toUpperCase())).length;
-          addVal += bounceCount * 0.02;
-        }
-
-        const newValue = Math.min(1000, attr.value + parseFloat(addVal.toFixed(2)));
-        return { ...attr, value: newValue };
-      })
-    );
+    setAttributes((prev) => AttributeEngine.applyTrainingSession(prev, report));
 
     // Increment active skills' isolated Mastery points and handle level-up trigger
     if (report.skillUsage) {
@@ -2161,58 +2071,6 @@ export default function App() {
     if (report.completedQuestId) {
       handleCompleteDirective(report.completedQuestId);
     }
-  };
-
-
-  // UPGRADE SKILL MASTERY MANUAL SEQUENCER
-  const handleUpgradeSkillMastery = (id: string, amount?: number) => {
-    audioManager.playSkillUpgraded();
-    setSkills((prev) =>
-      prev.map((sk) => {
-        if (sk.id === id) {
-          const boostAmount = amount !== undefined ? amount : 8;
-          const newMastery = Math.min(sk.mastery + boostAmount, 2000);
-          const newLvl = newMastery >= 2000 ? sk.level + 1 : sk.level;
-          const updatedMastery = newMastery >= 2000 ? 50 : newMastery;
-
-          // Check for directive #d2 (Prepare ascension)
-          if (id === "s2") {
-            setDirectives((prevDir) =>
-              prevDir.map((dir) => {
-                if (dir.id === "d2") {
-                  return { ...dir, progress: Math.min(newMastery, dir.target) };
-                }
-                return dir;
-              })
-            );
-          }
-
-          return {
-            ...sk,
-            mastery: updatedMastery,
-            level: newLvl,
-            history: [`Upgraded mastery index on ${new Date().toLocaleDateString()}`, ...sk.history],
-          };
-        }
-        return sk;
-      })
-    );
-
-    // Log upgrade
-    const timestamp = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-    const targetSkillName = skills.find((x) => x.id === id)?.name || "SKILL";
-    setLogs((prev) => [
-      {
-        id: `lg-${Date.now()}`,
-        timestamp,
-        title: `${targetSkillName} MASTERED`,
-        description: `Integrated advanced finger-snap rotations into tactical cognitive metrics.`,
-        severity: "success",
-      },
-      ...prev,
-    ]);
-
-    handleAddXp(120);
   };
 
   // REGISTER CUSTOM SKILL/VARIATION
@@ -2276,56 +2134,7 @@ export default function App() {
   };
 
   const boostAttributesFromDungeon = (record: DungeonRecord) => {
-    setAttributes((prev) =>
-      prev.map((attr) => {
-        const lowerName = attr.name.toLowerCase();
-        let addVal = 0.08; // Higher base boost for dungeon completions than standard net drills!
-
-        const economy = record.economy;
-        const threatScore = record.threatEliminationScore;
-        const runs = record.runs;
-        const wickets = record.wickets;
-        const boundaries = record.boundaries;
-        const dotBalls = record.dotBalls;
-
-        if (lowerName === "accuracy") {
-          if (threatScore > 80) addVal += 0.12;
-          if (dotBalls >= 8) addVal += 0.10;
-        } else if (lowerName === "control") {
-          if (economy < 5.0) addVal += 0.15;
-          if (runs < 15) addVal += 0.10;
-        } else if (lowerName === "consistency") {
-          if (dotBalls >= 10) addVal += 0.15;
-          if (economy < 6.0) addVal += 0.08;
-        } else if (lowerName === "economy") {
-          if (economy < 4.5) addVal += 0.20;
-          else if (economy < 6.0) addVal += 0.10;
-          if (boundaries <= 1) addVal += 0.12;
-        } else if (lowerName === "pressure handling") {
-          if (threatScore > 85) addVal += 0.15;
-          if (wickets >= 3) addVal += 0.12;
-        } else if (lowerName === "flight") {
-          if (record.variationsUsed && record.variationsUsed.some(v => ["LEG BREAK", "GOOGLY", "FLIPPER"].includes(v.toUpperCase()))) {
-            addVal += 0.10;
-          }
-        } else if (lowerName === "drift") {
-          if (record.variationsUsed && record.variationsUsed.some(v => ["LEG BREAK", "GOOGLY", "SLIDER"].includes(v.toUpperCase()))) {
-            addVal += 0.10;
-          }
-        } else if (lowerName === "revolutions") {
-          if (record.variationsUsed && record.variationsUsed.some(v => ["TOP SPINNER", "SLIDER"].includes(v.toUpperCase()))) {
-            addVal += 0.12;
-          }
-        } else if (lowerName === "bounce") {
-          if (record.variationsUsed && record.variationsUsed.some(v => ["TOP SPINNER", "SLIDER", "FLIPPER"].includes(v.toUpperCase()))) {
-            addVal += 0.12;
-          }
-        }
-
-        const newValue = Math.min(1000, attr.value + parseFloat(addVal.toFixed(2)));
-        return { ...attr, value: newValue };
-      })
-    );
+    setAttributes((prev) => AttributeEngine.applyDungeonSession(prev, record));
   };
 
   const evaluateActiveDungeonQuest = (record: any) => {
@@ -2565,13 +2374,6 @@ export default function App() {
         if (dir.id === id) {
           handleAddXp(dir.id === "d2" ? 500 : 250);
 
-          // Spark attribute upgrades base on quest category
-          if (dir.id === "d1") {
-            setAttributes((attrs) =>
-              attrs.map((at) => (at.name === "Control" ? { ...at, value: Math.min(at.value + 5, 1000) } : at))
-            );
-          }
-
           // Trigger narrative logs
           const timestamp = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
           setTimeout(() => {
@@ -2665,14 +2467,6 @@ export default function App() {
       ...prevLogs,
     ]);
 
-    // Boost all attributes
-    setAttributes((prev) =>
-      prev.map((at) => ({
-        ...at,
-        value: Math.min(at.value + 15, 1000),
-        growthRate: "+9.2%",
-      }))
-    );
   };
 
   const handleAscensionFailure = () => {
@@ -2701,8 +2495,7 @@ export default function App() {
     id: string, 
     newName: string, 
     newRarity: SkillRarity, 
-    newLevel: number,
-    attributeBoost?: { name: string; value: number }
+    newLevel: number
   ) => {
     audioManager.playSkillEvolution();
     setSkills((prev) =>
@@ -2727,16 +2520,6 @@ export default function App() {
       lifetimeEvolutionTrials: (prev.lifetimeEvolutionTrials || 0) + 1,
     }));
 
-    if (attributeBoost) {
-      setAttributes((prev) =>
-        prev.map((at) => 
-          at.name.toUpperCase() === attributeBoost.name.toUpperCase()
-            ? { ...at, value: Math.min(at.value + attributeBoost.value, 1000), growthRate: `+${attributeBoost.value} Boost` }
-            : at
-        )
-      );
-    }
-
     // Register evolution chronicle logs
     const timestamp = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
     setLogs((prev) => [
@@ -2751,29 +2534,6 @@ export default function App() {
     ]);
 
     handleAddXp(200);
-  };
-
-
-  // UPGRADE ATTRIBUTES FROM GENERAL UPGRADE MENU
-  const handleUpgradeAttribute = (name: string) => {
-    audioManager.playSkillUpgraded();
-    setAttributes((prev) =>
-      prev.map((at) => (at.name === name ? { ...at, value: Math.min(at.value + 1.0, 1000), growthRate: "+0.1%" } : at))
-    );
-
-    const timestamp = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-    setLogs((prev) => [
-      {
-        id: `lg-${Date.now()}`,
-        timestamp,
-        title: `STAT ALLOTMENT: ${name.toUpperCase()}`,
-        description: `Upgraded base physical stat metric. Rotation drift rate boosted.`,
-        severity: "info",
-      },
-      ...prev,
-    ]);
-
-    handleAddXp(50);
   };
 
   return (
@@ -3374,7 +3134,7 @@ export default function App() {
 
                         {/* 3. Attributes Module */}
                         <div className="w-full">
-                          <AttributesPanel attributes={attributes} onBoostAttribute={handleUpgradeAttribute} />
+                          <AttributesPanel attributes={attributes} />
                         </div>
 
                         {/* 4. Extended Pending Quest Directives Section */}
@@ -3665,13 +3425,6 @@ export default function App() {
                               ...prevLogs,
                             ]);
 
-                            setAttributes((prev) =>
-                              prev.map((at) => ({
-                                ...at,
-                                value: Math.min(at.value + 15, 1000),
-                                growthRate: "+9.2%",
-                              }))
-                            );
                           }}
                           onAcknowledge={() => {
                             setAscensionState((prev) => ({
