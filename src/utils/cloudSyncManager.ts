@@ -11,9 +11,17 @@ export interface UnifiedProfile {
   dungeons: any[];
   logs: any[];
   aiAnalysis: any | null;
+  settings?: any;
   activeQuestId: string | null;
   practiceQuests: any[];
+  questDatabase?: any[];
+  pressureScenarios?: any[];
   activePracticeQuestId: string | null;
+  completedQuestIds?: string[];
+  failedQuestIds?: string[];
+  recentlyGeneratedQuestIds?: string[];
+  questRotationSeed?: string | null;
+  audioSettings?: any;
   evolutionHistory?: any[];
   updated_at: number; // Unix timestamp
 }
@@ -28,6 +36,9 @@ class CloudSyncManager {
   private isSyncing: boolean = false;
   private uploadTimer: any = null;
   private isApplyingCloudData: boolean = false;
+  private readonly questDatabaseKey = "monarch_quest_db_v1";
+  private readonly pressureDatabaseKey = "monarch_pressure_db_v1";
+  private readonly settingsKey = "monarch_nexus_settings_v1";
 
   constructor() {
     this.initAuthListener();
@@ -227,7 +238,7 @@ class CloudSyncManager {
       const localProfile = this.getLocalProfileFromStorage();
 
       if (data) {
-        const cloudProfile = data.profile_data as UnifiedProfile;
+        const cloudProfile = this.normalizeProfile(data.profile_data as UnifiedProfile);
         const cloudUpdatedAt = new Date(data.updated_at).getTime() || cloudProfile.updated_at || 0;
         const localUpdatedAt = localProfile.updated_at || 0;
 
@@ -239,8 +250,11 @@ class CloudSyncManager {
 
         const localQuestsCleared = localProfile.practiceQuests?.filter(q => q.completed).length || 0;
         const cloudQuestsCleared = cloudProfile.practiceQuests?.filter(q => q.completed).length || 0;
+        const localQuestDbCount = localProfile.questDatabase?.length || 0;
+        const cloudQuestDbCount = cloudProfile.questDatabase?.length || 0;
 
         let localIsMoreAdvanced = false;
+        let mergedProfile: UnifiedProfile | null = null;
 
         // Higher level beats lower level always
         if (localLevel > cloudLevel) {
@@ -253,6 +267,8 @@ class CloudSyncManager {
             // More completed quests wins
             if (localQuestsCleared > cloudQuestsCleared) {
               localIsMoreAdvanced = true;
+            } else if (localQuestDbCount > 0 && cloudQuestDbCount === 0) {
+              localIsMoreAdvanced = true;
             } else if (localUpdatedAt > cloudUpdatedAt) {
               // Fallback to timestamp
               localIsMoreAdvanced = true;
@@ -260,23 +276,28 @@ class CloudSyncManager {
           }
         }
 
+        mergedProfile = this.mergeQuestDatabases(localIsMoreAdvanced ? localProfile : cloudProfile, localProfile, cloudProfile);
+
         console.log(`[Sync Conflict Check] Cloud Level: ${cloudLevel} (XP: ${cloudXp}), Local Level: ${localLevel} (XP: ${localXp}). More advanced: ${localIsMoreAdvanced ? 'Local' : 'Cloud'}`);
 
         // 3. Conflict Resolution
         if (!localProfile.player) {
           // Empty clean local device - take cloud
           console.log("Empty device. Direct restoral of cloud profile.");
-          this.applyProfileToLocal(cloudProfile);
+          this.applyProfileToLocal(mergedProfile);
           this.setSyncState("success", "Restored latest profile from cloud!");
         } else if (localIsMoreAdvanced) {
           // Local is higher progress, push local back up to Supabase to update it
           console.log("Local metrics are superior. Syncing local progress up to remote storage.");
-          await this.uploadProfileToCloud(localProfile);
+          await this.uploadProfileToCloud(mergedProfile);
           this.setSyncState("success", "Synced advanced offline progress to Cloud!");
         } else {
           // Cloud has higher progress - apply to local device
           console.log("Cloud metrics are superior. Replacing local database state.");
-          this.applyProfileToLocal(cloudProfile);
+          this.applyProfileToLocal(mergedProfile);
+          if (mergedProfile !== cloudProfile) {
+            await this.uploadProfileToCloud(mergedProfile);
+          }
           this.setSyncState("success", "Restored advanced levels from cloud.");
         }
       } else {
@@ -304,9 +325,17 @@ class CloudSyncManager {
     const dungeons = JSON.parse(localStorage.getItem("monarch_dungeons_v10") || "[]");
     const logs = JSON.parse(localStorage.getItem("monarch_logs_v10") || "[]");
     const aiAnalysis = JSON.parse(localStorage.getItem("monarch_ai_analysis_v10") || "null");
+    const settings = this.readJsonObject(this.settingsKey);
     const activeQuestId = localStorage.getItem("monarch_active_quest_v10") || null;
     const practiceQuests = JSON.parse(localStorage.getItem("monarch_practice_quests_v10") || "[]");
+    const questDatabase = this.readJsonArray(this.questDatabaseKey);
+    const pressureScenarios = this.readJsonArray(this.pressureDatabaseKey);
     const activePracticeQuestId = localStorage.getItem("monarch_active_practice_quest_id_v10") || null;
+    const completedQuestIds = this.readJsonArray("monarch_completed_quest_ids_v10");
+    const failedQuestIds = this.readJsonArray("monarch_failed_quest_ids_v10");
+    const recentlyGeneratedQuestIds = this.readJsonArray("monarch_recently_generated_quest_ids_v10");
+    const questRotationSeed = localStorage.getItem("monarch_quest_rotation_seed_v10") || null;
+    const audioSettings = this.readJsonObject("monarch_sys_audio_settings");
     let evolutionHistory: any[] = [];
     try {
       const savedHist = localStorage.getItem("monarch_evolution_history_v5");
@@ -326,11 +355,89 @@ class CloudSyncManager {
       dungeons,
       logs,
       aiAnalysis,
+      settings,
       activeQuestId,
       practiceQuests,
+      questDatabase,
+      pressureScenarios,
       activePracticeQuestId,
+      completedQuestIds,
+      failedQuestIds,
+      recentlyGeneratedQuestIds,
+      questRotationSeed,
+      audioSettings,
       evolutionHistory,
       updated_at
+    };
+  }
+
+  private readJsonArray(key: string): any[] {
+    try {
+      const raw = localStorage.getItem(key);
+      const parsed = raw ? JSON.parse(raw) : [];
+      return Array.isArray(parsed) ? parsed : [];
+    } catch (e) {
+      console.warn(`Failed reading local profile array '${key}' for cloud sync:`, e);
+      return [];
+    }
+  }
+
+  private readJsonObject(key: string): any | null {
+    try {
+      const raw = localStorage.getItem(key);
+      const parsed = raw ? JSON.parse(raw) : null;
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
+    } catch (e) {
+      console.warn(`Failed reading local profile object '${key}' for cloud sync:`, e);
+      return null;
+    }
+  }
+
+  private normalizeProfile(profile: UnifiedProfile): UnifiedProfile {
+    const safeProfile = (profile || {}) as UnifiedProfile;
+    return {
+      ...safeProfile,
+      attributes: Array.isArray(safeProfile.attributes) ? safeProfile.attributes : [],
+      skills: Array.isArray(safeProfile.skills) ? safeProfile.skills : [],
+      directives: Array.isArray(safeProfile.directives) ? safeProfile.directives : [],
+      dungeons: Array.isArray(safeProfile.dungeons) ? safeProfile.dungeons : [],
+      logs: Array.isArray(safeProfile.logs) ? safeProfile.logs : [],
+      practiceQuests: Array.isArray(safeProfile.practiceQuests) ? safeProfile.practiceQuests : [],
+      questDatabase: Array.isArray(safeProfile.questDatabase) ? safeProfile.questDatabase : [],
+      pressureScenarios: Array.isArray(safeProfile.pressureScenarios) ? safeProfile.pressureScenarios : [],
+      completedQuestIds: Array.isArray(safeProfile.completedQuestIds) ? safeProfile.completedQuestIds : [],
+      failedQuestIds: Array.isArray(safeProfile.failedQuestIds) ? safeProfile.failedQuestIds : [],
+      recentlyGeneratedQuestIds: Array.isArray(safeProfile.recentlyGeneratedQuestIds) ? safeProfile.recentlyGeneratedQuestIds : [],
+      evolutionHistory: Array.isArray(safeProfile.evolutionHistory) ? safeProfile.evolutionHistory : [],
+      activeQuestId: safeProfile.activeQuestId || null,
+      activePracticeQuestId: safeProfile.activePracticeQuestId || null,
+      questRotationSeed: safeProfile.questRotationSeed || null,
+      updated_at: safeProfile.updated_at || 0
+    };
+  }
+
+  private mergeById(primary: any[], fallback: any[], idKeys: string[]): any[] {
+    const merged = new Map<string, any>();
+    [...fallback, ...primary].forEach((item, index) => {
+      if (!item) return;
+      const id = idKeys.map(key => item[key]).find(Boolean) || `item-${index}`;
+      merged.set(String(id), item);
+    });
+    return Array.from(merged.values());
+  }
+
+  private mergeQuestDatabases(preferred: UnifiedProfile, localProfile: UnifiedProfile, cloudProfile: UnifiedProfile): UnifiedProfile {
+    const preferredQuestDb = preferred.questDatabase || [];
+    const preferredPressure = preferred.pressureScenarios || [];
+    const localQuestDb = localProfile.questDatabase || [];
+    const cloudQuestDb = cloudProfile.questDatabase || [];
+    const localPressure = localProfile.pressureScenarios || [];
+    const cloudPressure = cloudProfile.pressureScenarios || [];
+
+    return {
+      ...preferred,
+      questDatabase: this.mergeById(preferredQuestDb, preferred === localProfile ? cloudQuestDb : localQuestDb, ["id"]),
+      pressureScenarios: this.mergeById(preferredPressure, preferred === localProfile ? cloudPressure : localPressure, ["scenarioId", "id"])
     };
   }
 
@@ -353,12 +460,30 @@ class CloudSyncManager {
     } else {
       localStorage.removeItem("monarch_ai_analysis_v10");
     }
+    if (profile.settings) {
+      localStorage.setItem(this.settingsKey, JSON.stringify(profile.settings));
+    }
     localStorage.setItem("monarch_active_quest_v10", profile.activeQuestId || "");
-    localStorage.setItem("monarch_practice_quests_v10", JSON.stringify(profile.practiceQuests));
+    localStorage.setItem("monarch_practice_quests_v10", JSON.stringify(profile.practiceQuests || []));
+    if (Array.isArray(profile.questDatabase) && profile.questDatabase.length > 0) {
+      localStorage.setItem(this.questDatabaseKey, JSON.stringify(profile.questDatabase));
+    }
+    if (Array.isArray(profile.pressureScenarios) && profile.pressureScenarios.length > 0) {
+      localStorage.setItem(this.pressureDatabaseKey, JSON.stringify(profile.pressureScenarios));
+    }
     if (profile.activePracticeQuestId) {
       localStorage.setItem("monarch_active_practice_quest_id_v10", profile.activePracticeQuestId);
     } else {
       localStorage.removeItem("monarch_active_practice_quest_id_v10");
+    }
+    localStorage.setItem("monarch_completed_quest_ids_v10", JSON.stringify(profile.completedQuestIds || []));
+    localStorage.setItem("monarch_failed_quest_ids_v10", JSON.stringify(profile.failedQuestIds || []));
+    localStorage.setItem("monarch_recently_generated_quest_ids_v10", JSON.stringify(profile.recentlyGeneratedQuestIds || []));
+    if (profile.questRotationSeed) {
+      localStorage.setItem("monarch_quest_rotation_seed_v10", profile.questRotationSeed);
+    }
+    if (profile.audioSettings) {
+      localStorage.setItem("monarch_sys_audio_settings", JSON.stringify(profile.audioSettings));
     }
     if (profile.evolutionHistory) {
       localStorage.setItem("monarch_evolution_history_v5", JSON.stringify(profile.evolutionHistory));
@@ -383,13 +508,25 @@ class CloudSyncManager {
 
     const user = this.userSession.user;
     const now = Date.now();
-    profile.updated_at = now;
+    const profileWithDatabases = this.normalizeProfile({
+      ...profile,
+      questDatabase: profile.questDatabase?.length ? profile.questDatabase : this.readJsonArray(this.questDatabaseKey),
+      pressureScenarios: profile.pressureScenarios?.length ? profile.pressureScenarios : this.readJsonArray(this.pressureDatabaseKey),
+      settings: profile.settings || this.readJsonObject(this.settingsKey),
+      completedQuestIds: profile.completedQuestIds?.length ? profile.completedQuestIds : this.readJsonArray("monarch_completed_quest_ids_v10"),
+      failedQuestIds: profile.failedQuestIds?.length ? profile.failedQuestIds : this.readJsonArray("monarch_failed_quest_ids_v10"),
+      recentlyGeneratedQuestIds: profile.recentlyGeneratedQuestIds?.length ? profile.recentlyGeneratedQuestIds : this.readJsonArray("monarch_recently_generated_quest_ids_v10"),
+      questRotationSeed: profile.questRotationSeed || localStorage.getItem("monarch_quest_rotation_seed_v10") || null,
+      audioSettings: profile.audioSettings || this.readJsonObject("monarch_sys_audio_settings"),
+      updated_at: now
+    });
+    profileWithDatabases.updated_at = now;
     localStorage.setItem("monarch_sync_updated_at", now.toString());
 
     const { error } = await supabase.from("player_profiles").upsert(
       {
         id: user.id,
-        profile_data: profile,
+        profile_data: profileWithDatabases,
         updated_at: new Date(now).toISOString()
       },
       { onConflict: "id" }
@@ -428,6 +565,12 @@ class CloudSyncManager {
     }, 1500); // 1.5 seconds debounce
   }
 
+  public async syncCurrentLocalProfileToCloud() {
+    const supabase = getSupabase();
+    if (!supabase || !this.userSession?.user || this.isApplyingCloudData) return;
+    await this.uploadProfileToCloud(this.getLocalProfileFromStorage());
+  }
+
   /**
    * Manual Sync push action
    */
@@ -460,8 +603,16 @@ class CloudSyncManager {
 
       if (error) throw error;
       if (data) {
-        const cloudProfile = data.profile_data as UnifiedProfile;
-        this.applyProfileToLocal(cloudProfile);
+        const cloudProfile = this.normalizeProfile(data.profile_data as UnifiedProfile);
+        const localProfile = this.getLocalProfileFromStorage();
+        const cloudWithLocalDatabases = this.mergeQuestDatabases(cloudProfile, localProfile, cloudProfile);
+        this.applyProfileToLocal(cloudWithLocalDatabases);
+        if (
+          (localProfile.questDatabase?.length || 0) > 0 &&
+          (cloudProfile.questDatabase?.length || 0) === 0
+        ) {
+          await this.uploadProfileToCloud(cloudWithLocalDatabases);
+        }
         this.setSyncState("success", "Manual Cloud Pull Successful!");
       } else {
         this.setSyncState("error", "No Cloud profile detected.");

@@ -49,6 +49,21 @@ To make sure that Google Sign-In returns directly to the Android app instead of 
    * `https://YOUR_WEB_DOMAINS` (For Web Deployment testing if applicable)
 4. Ensure `monarchspinner://callback` is registered exactly.
 
+### Avatar Storage Bucket
+
+Player avatars are uploaded to Supabase Storage and the public image URL is saved in `profile_data.player.profilePhoto`.
+
+1. Navigate to **Storage** in the Supabase Dashboard.
+2. Create a public bucket named `profile-images`.
+3. Allow image uploads for `image/png`, `image/jpeg`, `image/jpg`, and `image/webp`.
+4. Keep the bucket name consistent across Web, Android, and Render by setting:
+
+```env
+VITE_SUPABASE_AVATAR_BUCKET=profile-images
+```
+
+If your Supabase project already uses a different public avatar bucket, set `VITE_SUPABASE_AVATAR_BUCKET` to that exact bucket name in every deployment environment.
+
 ---
 
 ## 2. Advanced Conflict Resolution Engine
@@ -72,6 +87,7 @@ Create simple environment files to securely bind your app to the production data
 ```env
 VITE_SUPABASE_URL=https://your-project.supabase.co
 VITE_SUPABASE_ANON_KEY=your-supabase-public-anon-key
+VITE_SUPABASE_AVATAR_BUCKET=profile-images
 GEMINI_API_KEY=your-gemini-pro-api-key
 ```
 

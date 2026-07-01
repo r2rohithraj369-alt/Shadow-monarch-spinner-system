@@ -1224,10 +1224,14 @@ export default function App() {
       if (profile.directives) setDirectives(profile.directives);
       if (profile.dungeons) setDungeons(profile.dungeons);
       if (profile.logs) setLogs(profile.logs);
-      if (profile.aiAnalysis) setAiAnalysis(profile.aiAnalysis);
+      if (profile.aiAnalysis !== undefined) setAiAnalysis(profile.aiAnalysis);
+      if (profile.settings) setSettings(profile.settings);
       if (profile.activeQuestId !== undefined) setActiveQuestId(profile.activeQuestId);
       if (profile.practiceQuests) setPracticeQuests(profile.practiceQuests);
       if (profile.activePracticeQuestId !== undefined) setActivePracticeQuestId(profile.activePracticeQuestId);
+      if (profile.completedQuestIds) setCompletedQuestIds(profile.completedQuestIds);
+      if (profile.failedQuestIds) setFailedQuestIds(profile.failedQuestIds);
+      if (profile.recentlyGeneratedQuestIds) setRecentlyGeneratedIds(profile.recentlyGeneratedQuestIds);
       if (profile.evolutionHistory) setEvolutionHistory(profile.evolutionHistory);
     });
 
@@ -1323,7 +1327,6 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem("monarch_active_quest_v10", activeQuestId || "");
     localStorage.setItem("monarch_practice_quests_v10", JSON.stringify(practiceQuests));
-    QuestDatabaseManager.saveQuests(practiceQuests as any);
     if (activePracticeQuestId) {
       localStorage.setItem("monarch_active_practice_quest_id_v10", activePracticeQuestId);
     } else {
@@ -1339,6 +1342,9 @@ export default function App() {
     localStorage.setItem("monarch_dungeons_v10", JSON.stringify(dungeons));
     localStorage.setItem("monarch_logs_v10", JSON.stringify(logs));
     localStorage.setItem("monarch_evolution_history_v5", JSON.stringify(evolutionHistory));
+    localStorage.setItem("monarch_completed_quest_ids_v10", JSON.stringify(completedQuestIds));
+    localStorage.setItem("monarch_failed_quest_ids_v10", JSON.stringify(failedQuestIds));
+    localStorage.setItem("monarch_recently_generated_quest_ids_v10", JSON.stringify(recentlyGeneratedIds));
     if (aiAnalysis) {
       localStorage.setItem("monarch_ai_analysis_v10", JSON.stringify(aiAnalysis));
     }
@@ -1352,13 +1358,17 @@ export default function App() {
         dungeons,
         logs,
         aiAnalysis,
+        settings,
         activeQuestId,
         practiceQuests,
         activePracticeQuestId,
+        completedQuestIds,
+        failedQuestIds,
+        recentlyGeneratedQuestIds: recentlyGeneratedIds,
         evolutionHistory
       });
     }
-  }, [isLoggedIn, isGuest, player, attributes, skills, directives, dungeons, logs, aiAnalysis, practiceQuests, activePracticeQuestId, evolutionHistory]);
+  }, [isLoggedIn, isGuest, player, attributes, skills, directives, dungeons, logs, aiAnalysis, settings, practiceQuests, activePracticeQuestId, completedQuestIds, failedQuestIds, recentlyGeneratedIds, evolutionHistory]);
 
   // Sync the Ambient drone with player rank + level variations
   useEffect(() => {

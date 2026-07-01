@@ -1,8 +1,26 @@
 import { getSupabase } from "./supabaseClient";
 
+export const AVATAR_BUCKET =
+  import.meta.env.VITE_SUPABASE_AVATAR_BUCKET || "profile-images";
+
+async function ensureAvatarBucketAvailable(supabase: any) {
+  const { data, error } = await supabase.storage.getBucket(AVATAR_BUCKET);
+  if (!error && data) return;
+
+  const message = error?.message || "";
+  if (message.toLowerCase().includes("not found")) {
+    throw new Error(
+      `Supabase Storage bucket '${AVATAR_BUCKET}' was not found. Create a public bucket named '${AVATAR_BUCKET}' in Supabase Storage, or set VITE_SUPABASE_AVATAR_BUCKET to the bucket your project uses.`
+    );
+  }
+
+  throw new Error(`Unable to access Supabase Storage bucket '${AVATAR_BUCKET}': ${message || "unknown storage error"}`);
+}
+
 /**
  * Uploads a profile avatar image Blob to Supabase Storage.
- * Auto-creates the "profile-images" bucket if it doesn't exist yet.
+ * Uses the public avatar bucket configured by VITE_SUPABASE_AVATAR_BUCKET,
+ * defaulting to "profile-images".
  */
 export async function uploadAvatarToSupabase(userId: string, blob: Blob): Promise<string> {
   const supabase = getSupabase();
@@ -13,21 +31,11 @@ export async function uploadAvatarToSupabase(userId: string, blob: Blob): Promis
   const fileExt = blob.type.split("/")[1] || "webp";
   const filePath = `${userId}/avatar.${fileExt}`;
 
-  // Ensure bucket exists by attempting to create it
-  try {
-    await supabase.storage.createBucket("profile-images", {
-      public: true,
-      allowedMimeTypes: ["image/png", "image/jpeg", "image/jpg", "image/webp"],
-      fileSizeLimit: 5242880 // 5 MB
-    });
-  } catch (e) {
-    // Ignore error if bucket already exists
-    console.log("Bucket 'profile-images' check/creation complete:", e);
-  }
+  await ensureAvatarBucketAvailable(supabase);
 
   // Upload the blob (upsert: true replaces existing file)
   const { data, error } = await supabase.storage
-    .from("profile-images")
+    .from(AVATAR_BUCKET)
     .upload(filePath, blob, {
       contentType: blob.type,
       upsert: true
@@ -40,7 +48,7 @@ export async function uploadAvatarToSupabase(userId: string, blob: Blob): Promis
 
   // Get the public URL of the uploaded image
   const { data: urlData } = supabase.storage
-    .from("profile-images")
+    .from(AVATAR_BUCKET)
     .getPublicUrl(filePath);
 
   if (!urlData || !urlData.publicUrl) {
@@ -67,7 +75,7 @@ export async function deleteAvatarFromSupabase(userId: string): Promise<void> {
   ];
 
   try {
-    const { error } = await supabase.storage.from("profile-images").remove(paths);
+    const { error } = await supabase.storage.from(AVATAR_BUCKET).remove(paths);
     if (error) {
       console.warn("Non-fatal Supabase Storage delete warning:", error.message);
     }

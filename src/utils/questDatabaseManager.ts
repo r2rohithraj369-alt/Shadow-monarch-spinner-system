@@ -760,6 +760,13 @@ export class QuestDatabaseManager {
   static saveQuests(quests: CustomQuest[]) {
     localStorage.setItem(this.QUEST_KEY, JSON.stringify(quests));
     this.syncToCloud(quests, undefined);
+    this.syncProfileDataToSupabase();
+  }
+
+  private static syncProfileDataToSupabase() {
+    import("./cloudSyncManager")
+      .then(({ cloudSync }) => cloudSync.syncCurrentLocalProfileToCloud())
+      .catch((err) => console.warn("Supabase profile_data quest sync warning:", err));
   }
 
   static async syncToCloud(quests?: CustomQuest[], scenarios?: PressureScenarioData[]) {
@@ -874,6 +881,7 @@ export class QuestDatabaseManager {
   static savePressureScenarios(scenarios: PressureScenarioData[]) {
     localStorage.setItem(this.PRESSURE_KEY, JSON.stringify(scenarios));
     this.syncToCloud(undefined, scenarios);
+    this.syncProfileDataToSupabase();
   }
 
   // Add/Edit Quest
