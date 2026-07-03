@@ -7,7 +7,7 @@ import {
 } from "lucide-react";
 import { DungeonRecord, SkillItem, PracticeQuest } from "../types";
 import { playSystemClick, playSystemDing, playSystemError, playPortalSwoosh } from "../utils/audio";
-import WagonWheelMap, { getCricketZone, WagonWheelDeliver } from "./WagonWheelMap";
+import WagonWheelMap, { getCricketZone, VALUE_COLORS, WagonWheelDeliver } from "./WagonWheelMap";
 import DungeonCockpit from "./DungeonCockpit";
 
 interface DungeonReportProps {
@@ -508,7 +508,8 @@ export default function DungeonReport({
       isMvp,
       matchNotes,
       maidenOvers: 0,
-      variationsUsed: variationsFinalList
+      variationsUsed: variationsFinalList,
+      wagonWheelDeliveries: sessionDeliveries.map((delivery) => ({ ...delivery }))
     });
     
     // Reset controls
@@ -1657,6 +1658,45 @@ export default function DungeonReport({
                             {variable}
                           </div>
                         ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* AI DEBRIEF ASSESSMENT STATEMENT */}
+                  {selectedArchive.wagonWheelDeliveries && selectedArchive.wagonWheelDeliveries.length > 0 && (
+                    <div className="space-y-2.5">
+                      <span className="text-[10px] font-mono text-cyan-400 uppercase font-black tracking-widest block pb-1 border-b border-gray-900/60">
+                        WAGON WHEEL FLIGHT RECORD
+                      </span>
+                      <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
+                        <div className="lg:col-span-8 bg-black/70 border border-cyan-500/10 rounded-xl p-3 min-h-[360px]">
+                          <WagonWheelMap
+                            interactive={false}
+                            deliveries={selectedArchive.wagonWheelDeliveries}
+                            viewType="wheel"
+                          />
+                        </div>
+                        <div className="lg:col-span-4 grid grid-cols-2 lg:grid-cols-1 gap-2 text-[10px] font-mono">
+                          {[0, 1, 2, 3, 4, 6].map((runValue) => {
+                            const count = selectedArchive.wagonWheelDeliveries?.filter((delivery) => delivery.runs === runValue && !delivery.isWicket).length || 0;
+                            return (
+                              <div key={runValue} className="p-2 bg-black/70 border border-gray-900 rounded-lg flex items-center justify-between">
+                                <span className="text-gray-400 uppercase">{runValue === 0 ? "Dot Balls" : `${runValue} Run`}</span>
+                                <span className="font-black" style={{ color: VALUE_COLORS[runValue] }}>{count}</span>
+                              </div>
+                            );
+                          })}
+                          <div className="p-2 bg-black/70 border border-red-500/20 rounded-lg flex items-center justify-between">
+                            <span className="text-gray-400 uppercase">Wickets</span>
+                            <span className="text-red-400 font-black">{selectedArchive.wagonWheelDeliveries.filter((delivery) => delivery.isWicket).length}</span>
+                          </div>
+                          <div className="p-2 bg-black/70 border border-purple-500/20 rounded-lg">
+                            <span className="text-gray-500 uppercase block">Saved Coordinates</span>
+                            <strong className="text-purple-300">
+                              {selectedArchive.wagonWheelDeliveries.filter((delivery) => delivery.angle !== undefined && delivery.distance !== undefined).length} / {selectedArchive.wagonWheelDeliveries.length}
+                            </strong>
+                          </div>
+                        </div>
                       </div>
                     </div>
                   )}

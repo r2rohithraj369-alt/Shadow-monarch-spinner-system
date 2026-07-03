@@ -67,6 +67,12 @@ export default function QuestDatabase({ onRefreshDirectives, onNavigateToTab, sk
 
   const [isBulkModalOpen, setIsBulkModalOpen] = useState(false);
   const [bulkText, setBulkText] = useState(BULK_IMPORT_EXAMPLE);
+  const [renameToolOpen, setRenameToolOpen] = useState(false);
+  const [renameOldSkill, setRenameOldSkill] = useState("");
+  const [renameNewSkill, setRenameNewSkill] = useState("");
+  const [renameAdminCode, setRenameAdminCode] = useState("");
+  const [renameConfirmText, setRenameConfirmText] = useState("");
+  const [renameReport, setRenameReport] = useState<{ oldSkill: string; newSkill: string; totalUpdated: number; failed: number } | null>(null);
 
   // Pagination State
   const [currentPage, setCurrentPage] = useState(1);
@@ -187,6 +193,64 @@ export default function QuestDatabase({ onRefreshDirectives, onNavigateToTab, sk
     });
     addRecentLog(`Duplicated Quest: ${quest.name}`);
     notifyChanges();
+  };
+
+  const handleDeployQuest = (quest: CustomQuest) => {
+    playSystemDing();
+    const allQuests = QuestDatabaseManager.getQuests();
+    const deployedQuest = {
+      ...quest,
+      status: "PENDING" as const,
+      completed: false,
+      attemptsCount: quest.attemptsCount || 0,
+      lastAttemptStatus: quest.lastAttemptStatus || "NONE" as const,
+      targetSuccessCount: quest.targetSuccessCount || quest.requirements?.targetSuccessCount || quest.requirements?.perfectBallsNeeded || quest.requirements?.closeOrBetterNeeded || quest.requirements?.dotBallsNeeded || quest.requirements?.wicketsNeeded,
+      maxBalls: quest.maxBalls || quest.requirements?.maxBalls || (Number(quest.overs || quest.requirements?.oversMin || 2) * 6),
+      executionProgress: 0,
+      executionMisses: 0,
+    };
+    const nextQuests = [deployedQuest, ...allQuests.filter((item) => item.id !== quest.id)];
+    QuestDatabaseManager.saveQuests(nextQuests);
+    addRecentLog(`Deployed Quest: ${quest.name}`);
+    notifyChanges();
+  };
+
+  const handleBulkRenameSkill = () => {
+    const oldSkill = renameOldSkill.trim();
+    const newSkill = renameNewSkill.trim();
+    if (!oldSkill || !newSkill || renameAdminCode.trim() !== "369" || renameConfirmText.trim() !== "YES") {
+      playSystemError();
+      return;
+    }
+
+    const allQuests = QuestDatabaseManager.getQuests();
+    let totalUpdated = 0;
+    let failed = 0;
+    const nextQuests = allQuests.map((quest) => {
+      try {
+        const matchesTarget = (quest.targetSkill || "").toUpperCase() === oldSkill.toUpperCase();
+        const matchesSkillName = (quest.skillName || "").toUpperCase() === oldSkill.toUpperCase();
+        const matchesSkillId = (quest.skillId || "").toUpperCase() === oldSkill.toUpperCase();
+        if (!matchesTarget && !matchesSkillName && !matchesSkillId) return quest;
+        totalUpdated += 1;
+        return {
+          ...quest,
+          targetSkill: matchesTarget ? newSkill.toUpperCase() : quest.targetSkill,
+          skillName: matchesSkillName ? newSkill.toUpperCase() : quest.skillName,
+          skillId: matchesSkillId ? newSkill : quest.skillId,
+          lastModified: new Date().toISOString().split("T")[0],
+        };
+      } catch {
+        failed += 1;
+        return quest;
+      }
+    });
+
+    QuestDatabaseManager.saveQuests(nextQuests);
+    setRenameReport({ oldSkill, newSkill, totalUpdated, failed });
+    addRecentLog(`Bulk Renamed ${totalUpdated} Quest Skill References`);
+    notifyChanges();
+    playSystemDing();
   };
 
   const handleDeleteQuest = (id: string, name: string) => {

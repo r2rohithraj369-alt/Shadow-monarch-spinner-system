@@ -1704,8 +1704,27 @@ export default function App() {
       allQuests.push(selectedQuest);
     }
 
-    // Set status to UNLOCKED
-    selectedQuest.status = "UNLOCKED";
+    const normalizedQuest: PracticeQuest = {
+      ...selectedQuest,
+      skillId,
+      skillName,
+      status: "PENDING",
+      completed: false,
+      attemptsCount: selectedQuest.attemptsCount || 0,
+      lastAttemptStatus: selectedQuest.lastAttemptStatus || "NONE",
+      targetSuccessCount: selectedQuest.targetSuccessCount || selectedQuest.requirements?.targetSuccessCount || selectedQuest.requirements?.perfectBallsNeeded || selectedQuest.requirements?.closeOrBetterNeeded || selectedQuest.requirements?.dotBallsNeeded || selectedQuest.requirements?.wicketsNeeded,
+      maxBalls: selectedQuest.maxBalls || selectedQuest.requirements?.maxBalls || (Number(selectedQuest.overs || selectedQuest.oversLength || selectedQuest.requirements?.oversMin || 2) * 6),
+      executionProgress: selectedQuest.executionProgress || 0,
+      executionMisses: selectedQuest.executionMisses || 0,
+    };
+
+    selectedQuest = normalizedQuest;
+    const selectedQuestIndex = allQuests.findIndex((quest: any) => quest.id === selectedQuest.id);
+    if (selectedQuestIndex >= 0) {
+      allQuests[selectedQuestIndex] = selectedQuest;
+    } else {
+      allQuests.unshift(selectedQuest);
+    }
     
     QuestDatabaseManager.saveQuests(allQuests);
 
@@ -1716,8 +1735,11 @@ export default function App() {
       return next;
     });
 
-    const updatedGameplayQuests = allQuests.filter(q => q.status && q.status !== "LOCKED") as PracticeQuest[];
-    setPracticeQuests(updatedGameplayQuests);
+    setPracticeQuests((prev) => [
+      selectedQuest,
+      ...prev.filter((quest) => quest.id !== selectedQuest.id)
+    ]);
+    setActivePracticeQuestId(selectedQuest.id);
 
     // Dynamic Log notification
     const timestamp = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
@@ -1726,7 +1748,7 @@ export default function App() {
         id: `lg-${Date.now()}`,
         timestamp,
         title: `QUEST DEPLOYED`,
-        description: `Synthesized custom ${difficulty} spin challenge matching ${skillName}.`,
+        description: `Synthesized one custom ${difficulty} spin challenge matching ${skillName} and pinned it to Pending Quests.`,
         severity: "info",
       },
       ...prev,

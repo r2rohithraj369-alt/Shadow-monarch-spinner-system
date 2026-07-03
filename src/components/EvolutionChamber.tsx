@@ -378,6 +378,7 @@ export default function EvolutionChamber({
     beatenType?: string;
   }
   const [deliveryLogs, setDeliveryLogs] = useState<LoggedDelivery[]>([]);
+  const [manualQuestProgress, setManualQuestProgress] = useState<{ executed: number; missed: number }>({ executed: 0, missed: 0 });
 
   // Recent completed review overlay
   const [completedSessionReview, setCompletedSessionReview] = useState<LoggedSession | null>(null);
@@ -445,6 +446,7 @@ export default function EvolutionChamber({
       setRunsOffBat(0);
       setExtrasRunsConceded(0);
       setWicketDismissal("");
+      setManualQuestProgress({ executed: 0, missed: 0 });
       setSessionActive(true);
       setCompletedSessionReview(null);
 
@@ -495,6 +497,33 @@ export default function EvolutionChamber({
     } else {
       startAction();
     }
+  };
+
+  const getActiveQuestTarget = (quest: PracticeQuest | null) => {
+    if (!quest) return 0;
+    return quest.targetSuccessCount ||
+      quest.requirements.targetSuccessCount ||
+      quest.requirements.perfectBallsNeeded ||
+      quest.requirements.closeOrBetterNeeded ||
+      quest.requirements.dotBallsNeeded ||
+      quest.requirements.wicketsNeeded ||
+      0;
+  };
+
+  const getActiveQuestMaxBalls = (quest: PracticeQuest | null) => {
+    if (!quest) return totalOversGoal * 6;
+    return quest.maxBalls ||
+      quest.requirements.maxBalls ||
+      Number(quest.overs || quest.oversLength || quest.requirements.oversMin || totalOversGoal) * 6;
+  };
+
+  const markQuestExecution = (result: "EXECUTED" | "MISSED") => {
+    if (!activePracticeQuest || !sessionActive || deliveryLogs.length === 0) return;
+    playSystemClick();
+    setManualQuestProgress((prev) => ({
+      executed: prev.executed + (result === "EXECUTED" ? 1 : 0),
+      missed: prev.missed + (result === "MISSED" ? 1 : 0),
+    }));
   };
 
   const handleLogDelivery = () => {
@@ -720,7 +749,20 @@ export default function EvolutionChamber({
         skillWickets
       };
 
-      const evalRes = evaluateQuestCompletion(activePracticeQuest, sessionStats);
+      const targetSuccessCount = getActiveQuestTarget(activePracticeQuest);
+      const maxBalls = getActiveQuestMaxBalls(activePracticeQuest);
+      const manualAttempts = manualQuestProgress.executed + manualQuestProgress.missed;
+      const manualFailures: string[] = [];
+      if (targetSuccessCount > 0 && manualQuestProgress.executed < targetSuccessCount) {
+        manualFailures.push(`Executed ${manualQuestProgress.executed} objective deliveries manually (Needs ${targetSuccessCount}).`);
+      }
+      if (maxBalls > 0 && logsToUse.length > maxBalls) {
+        manualFailures.push(`Used ${logsToUse.length} balls, exceeding the available attempt limit of ${maxBalls}.`);
+      }
+
+      const evalRes = targetSuccessCount > 0 && manualAttempts > 0
+        ? { met: manualFailures.length === 0, failures: manualFailures }
+        : evaluateQuestCompletion(activePracticeQuest, sessionStats);
 
       questStatusObj = {
         questId: activePracticeQuest.id,
@@ -1930,6 +1972,44 @@ export default function EvolutionChamber({
 
                       <div className="space-y-2 text-[11px]">
                         <span className="text-[9px] text-gray-550 text-gray-500 block uppercase">REAL-TIME TELEMETRY MATRIX</span>
+                        {getActiveQuestTarget(activePracticeQuest) > 0 && (
+                          <div className="p-3 bg-black/70 border border-cyan-500/20 rounded-lg space-y-2">
+                            <div className="flex items-center justify-between">
+                              <span className="text-[9px] text-cyan-300 font-black uppercase">Actual Objective Execution</span>
+                              <span className="text-[10px] font-black text-white">
+                                {manualQuestProgress.executed} / {getActiveQuestTarget(activePracticeQuest)}
+                              </span>
+                            </div>
+                            <div className="h-2 bg-black border border-gray-900 rounded-full overflow-hidden">
+                              <div
+                                className="h-full bg-cyan-400 transition-all"
+                                style={{ width: `${Math.min(100, (manualQuestProgress.executed / Math.max(1, getActiveQuestTarget(activePracticeQuest))) * 100)}%` }}
+                              />
+                            </div>
+                            <div className="grid grid-cols-2 gap-2">
+                              <button
+                                type="button"
+                                onClick={() => markQuestExecution("EXECUTED")}
+                                disabled={deliveryLogs.length === 0}
+                                className="py-2 rounded border border-green-500/30 bg-green-500/10 text-green-300 hover:bg-green-400 hover:text-black text-[10px] font-mono font-black uppercase disabled:opacity-40 disabled:cursor-not-allowed"
+                              >
+                                Executed
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => markQuestExecution("MISSED")}
+                                disabled={deliveryLogs.length === 0}
+                                className="py-2 rounded border border-red-500/30 bg-red-500/10 text-red-300 hover:bg-red-500 hover:text-white text-[10px] font-mono font-black uppercase disabled:opacity-40 disabled:cursor-not-allowed"
+                              >
+                                Missed
+                              </button>
+                            </div>
+                            <div className="flex justify-between text-[9px] text-gray-500">
+                              <span>Missed: {manualQuestProgress.missed}</span>
+                              <span>Attempt cap: {getActiveQuestMaxBalls(activePracticeQuest)} balls</span>
+                            </div>
+                          </div>
+                        )}
                         
                         <div className="space-y-1.5">
                           {activePracticeQuest.requirements.oversMin !== undefined && (

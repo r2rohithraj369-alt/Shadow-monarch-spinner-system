@@ -93,6 +93,15 @@ export interface SkillItem {
   trialProgressRunsLimitMet?: boolean;
   trialProgressPressureMet?: boolean;
   trialProgressDungeonMet?: boolean;
+  evolutionTrials?: Array<{
+    level: number;
+    status: "PENDING" | "COMPLETED";
+    acceptedAt?: string;
+    completedAt?: string;
+    objective?: string;
+    xpReward?: number;
+    masteryReward?: number;
+  }>;
   archived?: boolean;
   archivedAt?: string;
   archiveReason?: string;
@@ -158,6 +167,22 @@ export interface DungeonRecord {
   dismissalTypesList?: string[];
   matchNotes?: string;
   maidenOvers?: number;
+  wagonWheelDeliveries?: Array<{
+    over: number;
+    ballNum: number;
+    skillName: string;
+    length: string;
+    runs: number;
+    isWicket: boolean;
+    wicketType: string;
+    dotBallType?: "BEATEN" | "FIELDER" | null;
+    beatenType?: string;
+    isExtra?: boolean;
+    extraType?: "WIDE" | "NO_BALL" | "NONE";
+    angle?: number;
+    distance?: number;
+    zone?: string;
+  }>;
 }
 
 export interface EvolutionLogEntry {
@@ -229,6 +254,8 @@ export interface PracticeQuest {
   type: "CHAMBER_NET" | "CHAMBER_MATCH_SIM" | "DUNGEON_MATCH";
   requirements: {
     oversMin?: number;
+    targetSuccessCount?: number;
+    maxBalls?: number;
     perfectBallsNeeded?: number;
     closeOrBetterNeeded?: number;
     wicketsNeeded?: number;
@@ -245,4 +272,8 @@ export interface PracticeQuest {
   oversLength?: number;
   status?: "LOCKED" | "UNLOCKED" | "PENDING" | "ACTIVE" | "COMPLETED";
   overs?: number | string;
+  executionProgress?: number;
+  executionMisses?: number;
+  targetSuccessCount?: number;
+  maxBalls?: number;
 }

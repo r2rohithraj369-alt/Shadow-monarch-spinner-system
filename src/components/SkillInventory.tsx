@@ -87,17 +87,21 @@ export default function SkillInventory({
   const [trialVerificationInput, setTrialVerificationInput] = useState("");
   const [trialErrorMsg, setTrialErrorMsg] = useState("");
   const [trialSuccessMsg, setTrialSuccessMsg] = useState("");
-  const [secureAction, setSecureAction] = useState<null | { type: "EDIT" | "DELETE"; skill: SkillItem; step: "CONFIRM" | "PASSWORD" | "EDITOR"; error?: string }>(null);
+  const [secureAction, setSecureAction] = useState<null | { type: "EDIT" | "ARCHIVE" | "DELETE"; skill: SkillItem; step: "CONFIRM" | "PASSWORD" | "FINAL_DELETE" | "EDITOR"; error?: string }>(null);
   const [adminCode, setAdminCode] = useState("");
+  const [deleteConfirmText, setDeleteConfirmText] = useState("");
   const [editName, setEditName] = useState("");
   const [editDescription, setEditDescription] = useState("");
   const [editRarity, setEditRarity] = useState<SkillRarity>("COMMON");
 
-  const selectedSkill = skills.find((s) => s.id === selectedSkillId) || skills[0];
+  const activeSkills = skills.filter((skill) => !skill.archived);
+  const archivedSkills = skills.filter((skill) => skill.archived);
+  const selectedSkill = skills.find((s) => s.id === selectedSkillId) || activeSkills[0] || skills[0];
 
-  const openSecureAction = (type: "EDIT" | "DELETE", skill: SkillItem) => {
+  const openSecureAction = (type: "EDIT" | "ARCHIVE" | "DELETE", skill: SkillItem) => {
     playSystemClick();
     setAdminCode("");
+    setDeleteConfirmText("");
     setSecureAction({ type, skill, step: "CONFIRM" });
   };
 
@@ -114,7 +118,7 @@ export default function SkillInventory({
       return;
     }
 
-    if (secureAction.type === "DELETE") {
+    if (secureAction.type === "ARCHIVE") {
       onUpdateSkillsState?.((prev) =>
         prev.map((skill) =>
           skill.id === secureAction.skill.id
@@ -134,10 +138,52 @@ export default function SkillInventory({
       return;
     }
 
+    if (secureAction.type === "DELETE") {
+      setDeleteConfirmText("");
+      setSecureAction({ ...secureAction, step: "FINAL_DELETE", error: undefined });
+      return;
+    }
+
     setEditName(secureAction.skill.name);
     setEditDescription(secureAction.skill.description || "");
     setEditRarity(secureAction.skill.rarity);
     setSecureAction({ ...secureAction, step: "EDITOR", error: undefined });
+  };
+
+  const restoreArchivedSkill = (skill: SkillItem) => {
+    playSystemDing();
+    onUpdateSkillsState?.((prev) =>
+      prev.map((item) =>
+        item.id === skill.id
+          ? {
+              ...item,
+              archived: false,
+              archivedAt: undefined,
+              archiveReason: undefined,
+              history: [`Restored from archive on ${new Date().toLocaleDateString()}.`, ...item.history]
+            }
+          : item
+      )
+    );
+    setSelectedSkillId(skill.id);
+  };
+
+  const permanentlyDeleteSkill = () => {
+    if (!secureAction || secureAction.type !== "DELETE") return;
+    if (deleteConfirmText.trim() !== "YES") {
+      playSystemError();
+      setSecureAction({ ...secureAction, error: "Deletion cancelled. Type YES exactly to permanently delete this skill." });
+      return;
+    }
+
+    onUpdateSkillsState?.((prev) => prev.filter((skill) => skill.id !== secureAction.skill.id));
+    if (selectedSkillId === secureAction.skill.id) {
+      setSelectedSkillId(activeSkills[0]?.id || null);
+    }
+    playSystemError();
+    setSecureAction(null);
+    setAdminCode("");
+    setDeleteConfirmText("");
   };
 
   const saveSkillEdit = () => {
@@ -271,6 +317,7 @@ export default function SkillInventory({
 
   const handleConfirmPhysicalTrialSuccess = () => {
     if (!selectedSkill) return;
+    const activeTrial = getSkillTrialCards(selectedSkill).pending[0];
 
     playSystemLevelUp();
     
@@ -296,6 +343,18 @@ export default function SkillInventory({
           sk.id === selectedSkill.id
             ? {
                 ...sk,
+                evolutionTrials: [
+                  ...(sk.evolutionTrials || []).filter((trial) => trial.level !== activeTrial?.level),
+                  ...(activeTrial ? [{
+                    level: activeTrial.level,
+                    status: "COMPLETED" as const,
+                    acceptedAt: new Date().toISOString(),
+                    completedAt: new Date().toISOString(),
+                    objective: activeTrial.objective,
+                    xpReward: activeTrial.xpReward,
+                    masteryReward: activeTrial.masteryReward,
+                  }] : [])
+                ],
                 trialObjectives: [],
                 trialProgressPerfects: 0,
                 trialProgressWickets: 0,
@@ -321,6 +380,48 @@ export default function SkillInventory({
     return matchId || matchName || matchSkillName;
   });
 
+  const getSkillTrialCards = (skill: SkillItem) => {
+    const completedLevels = new Set((skill.evolutionTrials || []).filter((trial) => trial.status === "COMPLETED").map((trial) => trial.level));
+    const maxUnlockedLevel = Math.floor(skill.level / 5) * 5;
+    const unlockedLevels = Array.from({ length: Math.max(0, maxUnlockedLevel / 5) }, (_, index) => (index + 1) * 5);
+    const pending = unlockedLevels
+      .filter((level) => !completedLevels.has(level))
+      .map((level) => ({
+        level,
+        status: "PENDING" as const,
+        name: `${skill.name} Evolution Trial ${level / 5}`,
+        difficulty: level >= 25 ? "MONARCH" : level >= 15 ? "CHALLENGING" : level >= 10 ? "MEDIUM" : "EASY",
+        objective: `Complete the active ${skill.name} evolution objectives unlocked at Skill Level ${level}.`,
+        xpReward: 100 + level * 20,
+        masteryReward: 120 + level * 25,
+      }));
+
+    const completed = (skill.evolutionTrials || [])
+      .filter((trial) => trial.status === "COMPLETED")
+      .map((trial) => ({
+        level: trial.level,
+        status: "COMPLETED" as const,
+        name: `${skill.name} Evolution Trial ${trial.level / 5}`,
+        difficulty: trial.level >= 25 ? "MONARCH" : trial.level >= 15 ? "CHALLENGING" : trial.level >= 10 ? "MEDIUM" : "EASY",
+        objective: trial.objective || `Evolution trial completed at Skill Level ${trial.level}.`,
+        xpReward: trial.xpReward || 100 + trial.level * 20,
+        masteryReward: trial.masteryReward || 120 + trial.level * 25,
+        completedAt: trial.completedAt,
+      }));
+
+    const locked = [maxUnlockedLevel + 5, maxUnlockedLevel + 10, maxUnlockedLevel + 15].map((level) => ({
+      level,
+      status: "LOCKED" as const,
+      name: `${skill.name} Evolution Trial ${level / 5}`,
+      difficulty: level >= 25 ? "MONARCH" : level >= 15 ? "CHALLENGING" : level >= 10 ? "MEDIUM" : "EASY",
+      objective: `Reach Skill Level ${level} with ${skill.name}.`,
+      xpReward: 100 + level * 20,
+      masteryReward: 120 + level * 25,
+    }));
+
+    return { pending, completed, locked };
+  };
+
   return (
     <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 p-6 bg-[#080808]/95 border border-purple-500/10 rounded-2xl relative overflow-hidden">
       <AnimatePresence>
@@ -341,7 +442,7 @@ export default function SkillInventory({
                 <div>
                   <h4 className="text-sm font-black font-mono text-white uppercase flex items-center gap-2">
                     <ShieldAlert className="w-4 h-4 text-amber-400" />
-                    {secureAction.step === "EDITOR" ? "Skill Editor" : secureAction.type === "EDIT" ? "Edit Skill" : "Archive Skill"}
+                    {secureAction.step === "EDITOR" ? "Skill Editor" : secureAction.type === "EDIT" ? "Edit Skill" : secureAction.type === "ARCHIVE" ? "Archive Skill" : "Permanently Delete Skill"}
                   </h4>
                   <p className="text-[10px] text-gray-500 font-mono uppercase mt-1">{secureAction.skill.name}</p>
                 </div>
@@ -359,7 +460,9 @@ export default function SkillInventory({
                   <p className="text-xs text-gray-300 leading-relaxed">
                     {secureAction.type === "EDIT"
                       ? "Editing a skill changes its permanent data. Do you wish to continue?"
-                      : "Deleting a skill will archive it instead of destroying progression references. Do you wish to continue?"}
+                      : secureAction.type === "ARCHIVE"
+                        ? "Archive this skill into inactive storage? Skill level, XP, mastery, trial progress, statistics, match history, quests, attributes, and evolution logs are preserved."
+                        : "Are you sure you want to permanently delete this skill? Deleting this skill will permanently remove all associated data."}
                   </p>
                   <div className="flex justify-end gap-2">
                     <button type="button" onClick={() => setSecureAction(null)} className="px-3 py-2 rounded border border-gray-800 text-gray-400 text-xs font-mono uppercase hover:text-white">Cancel</button>
@@ -384,6 +487,30 @@ export default function SkillInventory({
                   <div className="flex justify-end gap-2">
                     <button type="button" onClick={() => setSecureAction(null)} className="px-3 py-2 rounded border border-gray-800 text-gray-400 text-xs font-mono uppercase hover:text-white">Cancel</button>
                     <button type="button" onClick={verifyAdminCode} className="px-3 py-2 rounded border border-purple-500/30 bg-purple-500/10 text-purple-300 text-xs font-mono uppercase hover:bg-purple-400 hover:text-black">Verify</button>
+                  </div>
+                </div>
+              )}
+
+              {secureAction.step === "FINAL_DELETE" && (
+                <div className="pt-4 space-y-4">
+                  <div className="p-3 rounded-lg border border-red-500/30 bg-red-950/20 text-left">
+                    <p className="text-xs text-red-200 leading-relaxed">
+                      Administrator code accepted. Type <strong>YES</strong> to permanently delete {secureAction.skill.name}. This removes the skill instance from active and archived storage.
+                    </p>
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-mono text-gray-400 uppercase mb-1">Final Confirmation</label>
+                    <input
+                      value={deleteConfirmText}
+                      onChange={(event) => setDeleteConfirmText(event.target.value)}
+                      placeholder="Type YES"
+                      className="w-full bg-black border border-red-900/70 rounded px-3 py-2 text-sm text-white font-mono focus:outline-none focus:border-red-500"
+                    />
+                    {secureAction.error && <p className="text-[10px] text-red-400 mt-2 font-mono">{secureAction.error}</p>}
+                  </div>
+                  <div className="flex justify-end gap-2">
+                    <button type="button" onClick={() => setSecureAction(null)} className="px-3 py-2 rounded border border-gray-800 text-gray-400 text-xs font-mono uppercase hover:text-white">Cancel</button>
+                    <button type="button" onClick={permanentlyDeleteSkill} className="px-3 py-2 rounded border border-red-500/40 bg-red-500/10 text-red-300 text-xs font-mono uppercase hover:bg-red-500 hover:text-white">Permanently Delete</button>
                   </div>
                 </div>
               )}
@@ -603,7 +730,7 @@ export default function SkillInventory({
 
         {/* Skill Cards grid list */}
         <div className="space-y-3 max-h-[520px] overflow-y-auto pr-1">
-          {skills.map((skill) => {
+          {activeSkills.map((skill) => {
             const isSelected = skill.id === selectedSkillId;
             const isBreakthroughReady = skill.mastery >= 1000;
             const titleDetails = getSkillTitleDetails(skill.level);
@@ -667,7 +794,7 @@ export default function SkillInventory({
                       type="button"
                       onClick={(event) => {
                         event.stopPropagation();
-                        openSecureAction("DELETE", skill);
+                        openSecureAction("ARCHIVE", skill);
                       }}
                       className="p-1 rounded border border-red-500/20 text-red-400 bg-red-500/10 hover:bg-red-400 hover:text-black transition-colors"
                       title="Archive skill"
@@ -684,6 +811,62 @@ export default function SkillInventory({
               </div>
             );
           })}
+        </div>
+
+        <div className="mt-4 pt-4 border-t border-gray-900 space-y-3">
+          <div className="flex items-center justify-between">
+            <h4 className="text-[10px] font-mono text-amber-300 uppercase font-black tracking-widest flex items-center gap-1.5">
+              <Archive className="w-3.5 h-3.5" />
+              Archived Skills
+            </h4>
+            <span className="text-[9px] font-mono text-gray-500">{archivedSkills.length} stored</span>
+          </div>
+          {archivedSkills.length === 0 ? (
+            <div className="p-3 bg-black/50 border border-gray-900 rounded-lg text-[10px] text-gray-600 font-mono text-center">
+              Archive storage empty.
+            </div>
+          ) : (
+            <div className="space-y-2 max-h-[220px] overflow-y-auto pr-1">
+              {archivedSkills.map((skill) => (
+                <div key={skill.id} className="p-3 rounded-lg bg-black border border-amber-500/15 flex flex-col gap-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <h5 className="text-xs font-mono font-black text-gray-200 uppercase">{skill.name}</h5>
+                      <p className="text-[9px] font-mono text-gray-500 mt-0.5">
+                        LV {skill.level} | Mastery {skill.mastery} | Archived {skill.archivedAt ? new Date(skill.archivedAt).toLocaleDateString() : "Unknown"}
+                      </p>
+                    </div>
+                    <span className={`text-[8px] font-mono px-1.5 py-0.5 rounded border uppercase ${getRarityColor(skill.rarity)}`}>
+                      {skill.rarity}
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-3 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => restoreArchivedSkill(skill)}
+                      className="px-2 py-1.5 rounded border border-green-500/30 bg-green-500/10 text-green-300 hover:bg-green-400 hover:text-black text-[9px] font-mono font-bold uppercase"
+                    >
+                      Restore Skill
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setSelectedSkillId(skill.id)}
+                      className="px-2 py-1.5 rounded border border-cyan-500/25 bg-cyan-500/10 text-cyan-300 hover:bg-cyan-400 hover:text-black text-[9px] font-mono font-bold uppercase"
+                    >
+                      View Details
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => openSecureAction("DELETE", skill)}
+                      className="px-2 py-1.5 rounded border border-red-500/30 bg-red-500/10 text-red-300 hover:bg-red-500 hover:text-white text-[9px] font-mono font-bold uppercase"
+                    >
+                      Delete
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </div>
 
@@ -984,15 +1167,15 @@ export default function SkillInventory({
 
                 <button
                   onClick={handleTriggerEvolutionTrial}
-                  disabled={selectedSkill.mastery < 1000 || selectedSkill.archived}
+                  disabled={getSkillTrialCards(selectedSkill).pending.length === 0 || selectedSkill.archived}
                   className={`py-3.5 rounded font-mono text-xs font-black tracking-widest uppercase flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
-                    selectedSkill.mastery >= 1000 && !selectedSkill.archived
+                    getSkillTrialCards(selectedSkill).pending.length > 0 && !selectedSkill.archived
                       ? "bg-gradient-to-r from-yellow-600 to-amber-700 border border-yellow-500/40 text-white shadow-[0_0_15px_#D4AF37]"
                       : "bg-[#0a0a0a] border-gray-900 text-gray-600 cursor-not-allowed border opacity-20"
                   }`}
                 >
                   <Award className="w-4.5 h-4.5 text-yellow-400" />
-                  Perform Evolution Trial
+                  Evolution Trial Inbox ({getSkillTrialCards(selectedSkill).pending.length})
                 </button>
               </div>
             </motion.div>
@@ -1022,6 +1205,54 @@ export default function SkillInventory({
                   <p className="text-[11px] text-gray-300 leading-relaxed font-sans mt-1 text-justify">
                     To trigger the physical evolution and ascend of <strong className="text-white">{selectedSkill.name}</strong>, you must satisfy the following real gameplay targets inside the <strong className="text-purple-400">Evolution Chamber</strong> or <strong className="text-cyan-400">Match Dungeons</strong>. Your progress is monitored automatically:
                   </p>
+
+                  {(() => {
+                    const trialGroups = getSkillTrialCards(selectedSkill);
+                    const activeTrial = trialGroups.pending[0];
+                    return (
+                      <div className="space-y-2 pt-2 border-t border-gray-950">
+                        {activeTrial && (
+                          <div className="p-3 bg-yellow-950/10 border border-yellow-500/30 rounded-lg">
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="text-[10px] text-yellow-300 font-mono font-black uppercase">{activeTrial.name}</span>
+                              <span className="text-[8px] text-black bg-yellow-400 px-1.5 py-0.5 rounded font-mono font-black">PENDING</span>
+                            </div>
+                            <div className="grid grid-cols-2 gap-2 mt-2 text-[9px] font-mono text-gray-400">
+                              <span>Unlocked: Skill LV {activeTrial.level}</span>
+                              <span>Current: Skill LV {selectedSkill.level}</span>
+                              <span>Difficulty: {activeTrial.difficulty}</span>
+                              <span>XP: +{activeTrial.xpReward} | Mastery: +{activeTrial.masteryReward}</span>
+                            </div>
+                            <p className="text-[10px] text-gray-300 mt-2 leading-relaxed">{activeTrial.objective}</p>
+                          </div>
+                        )}
+                        <div className="grid grid-cols-3 gap-2 text-center font-mono text-[9px]">
+                          <div className="p-2 bg-black rounded border border-yellow-500/20">
+                            <span className="text-yellow-300 block font-black">{trialGroups.pending.length}</span>
+                            <span className="text-gray-500 uppercase">Pending</span>
+                          </div>
+                          <div className="p-2 bg-black rounded border border-green-500/20">
+                            <span className="text-green-300 block font-black">{trialGroups.completed.length}</span>
+                            <span className="text-gray-500 uppercase">Completed</span>
+                          </div>
+                          <div className="p-2 bg-black rounded border border-gray-800">
+                            <span className="text-gray-300 block font-black">{trialGroups.locked.length}</span>
+                            <span className="text-gray-500 uppercase">Locked</span>
+                          </div>
+                        </div>
+                        {trialGroups.completed.length > 0 && (
+                          <div className="max-h-20 overflow-y-auto space-y-1">
+                            {trialGroups.completed.map((trial) => (
+                              <div key={trial.level} className="flex justify-between rounded border border-green-500/10 bg-green-950/10 px-2 py-1 text-[9px] font-mono">
+                                <span className="text-green-300">Completed Badge: LV {trial.level}</span>
+                                <span className="text-gray-500">{trial.completedAt ? new Date(trial.completedAt).toLocaleDateString() : "Logged"}</span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()}
 
                   <div className="space-y-2.5 pt-2 border-t border-gray-950">
                     {/* Perfect Deliveries Objective */}
