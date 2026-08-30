@@ -269,6 +269,22 @@ export default function AnimatedPortal({
   const totalCount = checks.length;
   const overallReadyPercent = Math.round((metCount / totalCount) * 100);
   const isSovereignAscensionAllowed = metCount === totalCount;
+  const requirementWhy = (label: string) => {
+    if (label.includes("Level")) return "Why: level proves that enough player XP has been earned to handle the next rank.";
+    if (label.includes("Attribute")) return "Why: core attributes prevent a rank from outpacing control, accuracy, and physical consistency.";
+    if (label.includes("Quest")) return "Why: completed quests show repeated, deliberate skill practice rather than a one-off result.";
+    if (label.includes("Session") || label.includes("Pressure")) return "Why: chamber work verifies repeatable execution in training and pressure conditions.";
+    if (label.includes("Dungeon")) return "Why: match dungeons prove the progression transfers into competitive scenarios.";
+    if (label.includes("Trial")) return "Why: evolution trials validate that unlocked skill potential has been demonstrated.";
+    if (label.includes("Skill")) return "Why: the skill threshold keeps rank progression aligned with actual variation mastery.";
+    return "Why: this lifetime metric confirms the rank is supported by sustained performance.";
+  };
+  const remainingText = (check: typeof checks[number]) => {
+    if (check.isMet) return "Completed";
+    const target = Number((check.target.match(/[0-9.]+/) || [])[0]);
+    const actual = Number((check.actual.match(/[0-9.]+/) || [])[0]);
+    return Number.isFinite(target) && Number.isFinite(actual) ? `${Math.max(0, target - actual).toFixed(1).replace(/\.0$/, "")} remaining` : "Requirement remaining";
+  };
 
   const handleTriggerAscension = () => {
     if (!isSovereignAscensionAllowed) return;
@@ -403,6 +419,11 @@ export default function AnimatedPortal({
                         style={{ width: `${c.percent}%` }}
                       />
                     </div>
+                    <div className="flex justify-between text-[9px] text-gray-500">
+                      <span>{c.isMet ? "Completed" : remainingText(c)}</span>
+                      <span>{c.percent}% complete</span>
+                    </div>
+                    <p className="text-[9px] leading-relaxed text-gray-500 pt-1 font-sans">{requirementWhy(c.label)}</p>
                   </div>
                 </div>
               );

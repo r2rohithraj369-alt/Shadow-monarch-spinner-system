@@ -12,6 +12,37 @@ app.use(express.json());
 
 const PORT = 3000;
 
+function buildDeterministicAnalysis(player: any, attributes: any[] = [], skills: any[] = [], recentDungeons: any[] = []) {
+  const validAttributes = Array.isArray(attributes) ? attributes.filter((attribute) => Number.isFinite(attribute?.value)) : [];
+  const weakestAttribute = validAttributes.sort((a, b) => a.value - b.value)[0];
+  const strongestSkill = [...(Array.isArray(skills) ? skills : [])].sort((a, b) => (b.level || 0) - (a.level || 0))[0];
+  const matches = Array.isArray(recentDungeons) ? recentDungeons : [];
+  const totalOvers = matches.reduce((total, match) => total + Number(match.overs || 0), 0);
+  const totalRuns = matches.reduce((total, match) => total + Number(match.runs || 0), 0);
+  const totalWickets = matches.reduce((total, match) => total + Number(match.wickets || 0), 0);
+  const economy = totalOvers > 0 ? totalRuns / totalOvers : null;
+  const attributeAverage = validAttributes.length ? validAttributes.reduce((total, attribute) => total + attribute.value, 0) / validAttributes.length : 0;
+  const levelProgress = Math.min(100, ((player?.level || 0) / Math.max(1, (player?.level || 0) + 5)) * 100);
+  const economyScore = economy === null ? 0 : Math.max(0, Math.min(100, (8 - economy) * 20));
+  const probability = Math.round(Math.max(0, Math.min(100, attributeAverage * 0.45 + levelProgress * 0.3 + economyScore * 0.15 + Math.min(totalWickets * 3, 10))));
+  const limiter = weakestAttribute?.name || "Recorded match data";
+  const training = weakestAttribute ? `${weakestAttribute.name} target drill` : "Log an Evolution Chamber session";
+  const historyPhrase = matches.length ? `${matches.length} recorded match${matches.length === 1 ? "" : "es"}, ${totalWickets} wickets${economy !== null ? `, economy ${economy.toFixed(2)}` : ""}` : "no recorded matches yet";
+  return {
+    currentLimiter: limiter,
+    recommendedTraining: training,
+    expectedGrowth: "Recalculate after the next recorded session",
+    analysisText: `Based on ${historyPhrase}, ${limiter} is the current limiter. ${strongestSkill ? `${strongestSkill.name} is your strongest recorded skill at level ${strongestSkill.level}.` : "Add skill and session data to improve the forecast."}`,
+    systemAlert: matches.length ? "DETERMINISTIC HISTORY ANALYSIS" : "INSUFFICIENT HISTORY: LOG A SESSION",
+    forecastPercent: probability,
+    forecastReason: [
+      `Average recorded attribute score: ${attributeAverage.toFixed(1)}.`,
+      economy === null ? "No match economy is recorded yet." : `Recorded economy across ${totalOvers} overs: ${economy.toFixed(2)}.`,
+      `Current player level: ${player?.level || 0}; recorded wickets: ${totalWickets}.`
+    ]
+  };
+}
+
 // Lazy initialization of Gemini API Client
 let aiClient: GoogleGenAI | null = null;
 function getAI(): GoogleGenAI {
@@ -39,20 +70,7 @@ app.post("/api/monarch-ai/analyze", async (req, res) => {
 
     const hasApiKey = !!process.env.GEMINI_API_KEY;
     if (!hasApiKey) {
-      // Return high-quality, thematic local/offline system results so the app is immediately fully functional!
-      return res.json({
-        currentLimiter: "Slider Pitch Consistency",
-        recommendedTraining: "Holographic Target Session #4",
-        expectedGrowth: "+4.1% Accuracy Gain",
-        analysisText: "SYSTEM WARNING: Slider trajectory remains shallow. The rotation lacks dynamic bite. Core target analysis indicates over-reliance on standard Googly setup. Initiate lateral drift drills to stabilize release and break the current level plateau.",
-        systemAlert: "CRITICAL: CURRENT LIMITER DISCOVERED IN THE EVOLUTION MATRIX",
-        forecastPercent: 78,
-        forecastReason: [
-          "Control stats surged by +5.2% following recent Session data.",
-          "Match experience is sufficient, but high-pressure error rate remains high.",
-          "Unlock level threshold requires completing the upcoming Ascension trial."
-        ]
-      });
+      return res.json(buildDeterministicAnalysis(player, attributes, skills, recentDungeons));
     }
 
     const ai = getAI();
@@ -111,18 +129,7 @@ app.post("/api/monarch-ai/analyze", async (req, res) => {
     res.json(parsedData);
   } catch (err: any) {
     console.error("Monarch AI analysis failed:", err);
-    res.status(500).json({
-      error: "Failed to perform system analysis. Fallback generator active.",
-      fallbackData: {
-        currentLimiter: "Over Spin Release Angle",
-        recommendedTraining: "Shadow Drift Grid Drill",
-        expectedGrowth: "+3.5% Arcane Drift",
-        analysisText: "The system is running on local fallback energy. Maintain current revs to breach status.",
-        systemAlert: "SYSTEM OPERATING IN SAFE MATRIX MODE",
-        forecastPercent: 70,
-        forecastReason: ["Verify system API key link.", "Review standard drills inside Evolution Chamber."]
-      }
-    });
+    res.json(buildDeterministicAnalysis(req.body?.player, req.body?.attributes, req.body?.skills, req.body?.recentDungeons));
   }
 });
 

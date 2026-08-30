@@ -211,6 +211,14 @@ export default function QuestDatabase({ onRefreshDirectives, onNavigateToTab, sk
     };
     const nextQuests = [deployedQuest, ...allQuests.filter((item) => item.id !== quest.id)];
     QuestDatabaseManager.saveQuests(nextQuests);
+    // Pending quests live in the player's progression store, not just the library.
+    // Keep the two stores in sync so deployment works immediately without synthesis.
+    const savedPractice = localStorage.getItem("monarch_practice_quests_v10");
+    const pending = savedPractice ? JSON.parse(savedPractice) : [];
+    localStorage.setItem("monarch_practice_quests_v10", JSON.stringify([
+      deployedQuest,
+      ...pending.filter((item: CustomQuest) => item.id !== quest.id)
+    ]));
     addRecentLog(`Deployed Quest: ${quest.name}`);
     notifyChanges();
   };
@@ -247,6 +255,20 @@ export default function QuestDatabase({ onRefreshDirectives, onNavigateToTab, sk
     });
 
     QuestDatabaseManager.saveQuests(nextQuests);
+    // Rename the player's pending/completed copies as well as the master library.
+    try {
+      const savedPractice = localStorage.getItem("monarch_practice_quests_v10");
+      if (savedPractice) {
+        const updatedPractice = JSON.parse(savedPractice).map((quest: CustomQuest) => ({
+          ...quest,
+          targetSkill: (quest.targetSkill || "").toUpperCase() === oldSkill.toUpperCase() ? newSkill.toUpperCase() : quest.targetSkill,
+          skillName: (quest.skillName || "").toUpperCase() === oldSkill.toUpperCase() ? newSkill.toUpperCase() : quest.skillName,
+        }));
+        localStorage.setItem("monarch_practice_quests_v10", JSON.stringify(updatedPractice));
+      }
+    } catch {
+      failed += 1;
+    }
     setRenameReport({ oldSkill, newSkill, totalUpdated, failed });
     addRecentLog(`Bulk Renamed ${totalUpdated} Quest Skill References`);
     notifyChanges();
@@ -864,6 +886,15 @@ export default function QuestDatabase({ onRefreshDirectives, onNavigateToTab, sk
                 </button>
 
                 <button
+                  onClick={() => { playSystemClick(); setRenameReport(null); setRenameToolOpen(true); }}
+                  className="px-3.5 py-2 bg-amber-950/30 hover:bg-amber-900/40 border border-amber-500/20 hover:border-amber-500/40 text-amber-300 text-[11px] font-mono font-bold uppercase rounded-xl transition-all cursor-pointer flex items-center gap-2"
+                  title="Administrator tool: update every quest reference when a skill is renamed"
+                >
+                  <Settings className="w-4 h-4" />
+                  Rename Skill
+                </button>
+
+                <button
                   onClick={handleRefreshDatabase}
                   className="px-3.5 py-2 bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 hover:border-cyan-500/30 text-zinc-300 hover:text-cyan-400 text-[11px] font-mono font-bold uppercase rounded-xl transition-all cursor-pointer flex items-center gap-2"
                   title="Reload the current Quest Database from storage"
@@ -1077,6 +1108,13 @@ export default function QuestDatabase({ onRefreshDirectives, onNavigateToTab, sk
                     title="Duplicate Quest"
                   >
                     <Copy className="w-3.5 h-3.5" />
+                  </button>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); handleDeployQuest(quest); }}
+                    className="px-2 py-1.5 bg-emerald-950/30 hover:bg-emerald-900/40 border border-emerald-500/20 hover:border-emerald-500/40 text-emerald-300 rounded-lg transition-all cursor-pointer text-[9px] font-mono font-bold uppercase"
+                    title="Send this quest directly to Pending Skill Quests"
+                  >
+                    Deploy Quest
                   </button>
                   <button
                     onClick={(e) => { e.stopPropagation(); handleDeleteQuest(quest.id, quest.name); }}
@@ -2660,6 +2698,29 @@ Objectives: Keep run rate below 6.5.`);
                   Close Preview
                 </button>
               </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* ADMINISTRATOR BULK SKILL RENAME */}
+      <AnimatePresence>
+        {renameToolOpen && (
+          <div className="fixed inset-0 bg-black/90 backdrop-blur-md z-[60] flex items-center justify-center p-4 font-mono text-xs text-white">
+            <motion.div initial={{ scale: 0.96, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.96, opacity: 0 }} className="bg-[#0b0b14] border border-amber-500/35 w-full max-w-lg rounded-2xl shadow-[0_0_50px_rgba(245,158,11,0.18)] p-6 space-y-4">
+              <div>
+                <span className="text-[9px] tracking-widest text-amber-400 font-black uppercase">Administrator mode</span>
+                <h3 className="text-base font-black uppercase mt-1">Bulk Skill Reference Rename</h3>
+                <p className="text-zinc-400 mt-2 leading-relaxed">Updates quest skill references only. Rewards, completion history, and quest IDs are preserved; no duplicate quests are created.</p>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <label className="space-y-1 text-zinc-500"><span>OLD SKILL</span><select value={renameOldSkill} onChange={e => setRenameOldSkill(e.target.value)} className="w-full bg-black border border-zinc-800 rounded-lg p-2.5 text-white"><option value="">Select skill</option>{activeSkills.map(skill => <option key={skill} value={skill}>{skill}</option>)}</select></label>
+                <label className="space-y-1 text-zinc-500"><span>NEW SKILL NAME</span><input value={renameNewSkill} onChange={e => setRenameNewSkill(e.target.value)} placeholder="e.g. Loopy Fast Ball" className="w-full bg-black border border-zinc-800 rounded-lg p-2.5 text-white" /></label>
+                <label className="space-y-1 text-zinc-500"><span>ADMIN CODE</span><input value={renameAdminCode} onChange={e => setRenameAdminCode(e.target.value)} placeholder="369" className="w-full bg-black border border-zinc-800 rounded-lg p-2.5 text-white" /></label>
+                <label className="space-y-1 text-zinc-500"><span>CONFIRMATION</span><input value={renameConfirmText} onChange={e => setRenameConfirmText(e.target.value.toUpperCase())} placeholder="Type YES" className="w-full bg-black border border-zinc-800 rounded-lg p-2.5 text-white" /></label>
+              </div>
+              {renameReport && <div className="bg-emerald-950/20 border border-emerald-500/25 rounded-lg p-3 grid grid-cols-2 gap-2 text-[10px]"><span>Old: <strong>{renameReport.oldSkill}</strong></span><span>New: <strong>{renameReport.newSkill}</strong></span><span>Total updated: <strong>{renameReport.totalUpdated}</strong></span><span>Failed: <strong>{renameReport.failed}</strong></span><span className="col-span-2 text-emerald-400 font-bold">Completed successfully</span></div>}
+              <div className="flex justify-end gap-3 pt-2"><button onClick={() => setRenameToolOpen(false)} className="px-4 py-2 rounded-lg bg-zinc-900 text-zinc-300">Cancel</button><button onClick={handleBulkRenameSkill} className="px-4 py-2 rounded-lg bg-amber-600 hover:bg-amber-500 text-black font-black">Update References</button></div>
             </motion.div>
           </div>
         )}

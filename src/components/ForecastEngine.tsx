@@ -66,16 +66,16 @@ export default function ForecastEngine({
   const totalWickets = dungeons.reduce((sum, d) => sum + d.wickets, 0);
   const avgEconomy = dungeons.length > 0
     ? Number((dungeons.reduce((sum, d) => sum + d.economy, 0) / dungeons.length).toFixed(2))
-    : 6.2;
+    : 0;
   const bestSkillName = skills.length > 0 
     ? [...skills].sort((a,b) => b.level - a.level)[0]?.name 
     : "Leg Break";
 
   // Dynamic system reasoning
   const reasons = (aiAnalysis && aiAnalysis.forecastReason) || [
-    `Rotational velocity on ${bestSkillName} is ascending by +6.2% weekly.`,
-    `Performance load with ${totalWickets} career combat takedowns is sufficient.`,
-    `Active match economy of ${avgEconomy} is approaching state threshold limit.`
+    `Strongest recorded skill: ${bestSkillName}.`,
+    `Recorded career wickets: ${totalWickets}.`,
+    dungeons.length ? `Recorded match economy: ${avgEconomy}.` : "No match history has been recorded yet."
   ];
 
   // MATHEMATICALLY CORRECT DYNAMIC VELOCITY MODELING:
@@ -106,23 +106,21 @@ export default function ForecastEngine({
   const daysToMonarch = computeDaysToLevel(100);
 
   // Real-life Cricket Career Metrics
-  const totalDungeonBalls = dungeons.reduce((sum, d) => sum + (d.overs * 6), 0);
-  const totalNetBalls = player.level > 0 ? (player.level * 36) : 0;
-  const grandTotalBalls = totalDungeonBalls + totalNetBalls;
+  const grandTotalBalls = player.lifetimeDeliveriesBowled || dungeons.reduce((sum, d) => sum + (d.overs * 6), 0);
   const careerOvers = (grandTotalBalls / 6).toFixed(1);
 
   // Real spinner release rate: professional spin bowlers clock around 1600-2400 RPM
-  const currentRPM = player.level > 0 ? (1600 + Math.min(800, (player.level * 10) + (player.efficiency * 2))) : 0;
+  const currentRPM = 0;
 
   // Lateral angle break deviation (usually around 1.5 to 6.5 degrees inside pitch dust layers)
-  const lateralDeviationDegrees = player.level > 0 ? (1.5 + (Math.min(99, player.efficiency) * 0.05)).toFixed(1) : "0.0";
+  const lateralDeviationDegrees = "0.0";
 
   // Bowling strike rate: balls bowled per wicket taken
-  const careerWickets = totalWickets > 0 ? totalWickets : (player.level > 0 ? Math.max(1, Math.round(player.level * 1.5)) : 0);
+  const careerWickets = player.lifetimeWickets || totalWickets;
   const careerStrikeRate = careerWickets > 0 ? (grandTotalBalls / careerWickets).toFixed(1) : "0.0";
 
   // Dot ball percentage (vital real wicket pressure statistic)
-  const totalDotBalls = dungeons.reduce((sum, d) => sum + d.dotBalls, 0) + (player.level > 0 ? Math.round(totalNetBalls * 0.65) : 0);
+  const totalDotBalls = player.lifetimeDotBalls || dungeons.reduce((sum, d) => sum + d.dotBalls, 0);
   const dotBallPercent = grandTotalBalls > 0 ? ((totalDotBalls / grandTotalBalls) * 100).toFixed(1) : "0.0";
 
   // Dynamic diagnostic warning

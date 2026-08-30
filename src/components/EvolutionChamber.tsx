@@ -379,6 +379,9 @@ export default function EvolutionChamber({
   }
   const [deliveryLogs, setDeliveryLogs] = useState<LoggedDelivery[]>([]);
   const [manualQuestProgress, setManualQuestProgress] = useState<{ executed: number; missed: number }>({ executed: 0, missed: 0 });
+  // A delivery may be assessed once only. This prevents a player from repeatedly
+  // pressing Executed for a single ball and makes the manual tracker auditable.
+  const [lastAssessedQuestDelivery, setLastAssessedQuestDelivery] = useState(0);
 
   // Recent completed review overlay
   const [completedSessionReview, setCompletedSessionReview] = useState<LoggedSession | null>(null);
@@ -447,6 +450,7 @@ export default function EvolutionChamber({
       setExtrasRunsConceded(0);
       setWicketDismissal("");
       setManualQuestProgress({ executed: 0, missed: 0 });
+      setLastAssessedQuestDelivery(0);
       setSessionActive(true);
       setCompletedSessionReview(null);
 
@@ -518,12 +522,14 @@ export default function EvolutionChamber({
   };
 
   const markQuestExecution = (result: "EXECUTED" | "MISSED") => {
-    if (!activePracticeQuest || !sessionActive || deliveryLogs.length === 0) return;
+    if (!activePracticeQuest || !sessionActive || deliveryLogs.length === 0 || lastAssessedQuestDelivery >= deliveryLogs.length) return;
+    if (deliveryLogs.length > getActiveQuestMaxBalls(activePracticeQuest)) return;
     playSystemClick();
     setManualQuestProgress((prev) => ({
       executed: prev.executed + (result === "EXECUTED" ? 1 : 0),
       missed: prev.missed + (result === "MISSED" ? 1 : 0),
     }));
+    setLastAssessedQuestDelivery(deliveryLogs.length);
   };
 
   const handleLogDelivery = () => {
@@ -1990,7 +1996,7 @@ export default function EvolutionChamber({
                               <button
                                 type="button"
                                 onClick={() => markQuestExecution("EXECUTED")}
-                                disabled={deliveryLogs.length === 0}
+                                disabled={deliveryLogs.length === 0 || lastAssessedQuestDelivery >= deliveryLogs.length || deliveryLogs.length > getActiveQuestMaxBalls(activePracticeQuest)}
                                 className="py-2 rounded border border-green-500/30 bg-green-500/10 text-green-300 hover:bg-green-400 hover:text-black text-[10px] font-mono font-black uppercase disabled:opacity-40 disabled:cursor-not-allowed"
                               >
                                 Executed
@@ -1998,7 +2004,7 @@ export default function EvolutionChamber({
                               <button
                                 type="button"
                                 onClick={() => markQuestExecution("MISSED")}
-                                disabled={deliveryLogs.length === 0}
+                                disabled={deliveryLogs.length === 0 || lastAssessedQuestDelivery >= deliveryLogs.length || deliveryLogs.length > getActiveQuestMaxBalls(activePracticeQuest)}
                                 className="py-2 rounded border border-red-500/30 bg-red-500/10 text-red-300 hover:bg-red-500 hover:text-white text-[10px] font-mono font-black uppercase disabled:opacity-40 disabled:cursor-not-allowed"
                               >
                                 Missed
@@ -2006,7 +2012,7 @@ export default function EvolutionChamber({
                             </div>
                             <div className="flex justify-between text-[9px] text-gray-500">
                               <span>Missed: {manualQuestProgress.missed}</span>
-                              <span>Attempt cap: {getActiveQuestMaxBalls(activePracticeQuest)} balls</span>
+                              <span>{lastAssessedQuestDelivery < deliveryLogs.length ? "Record this delivery" : "Delivery recorded"} · Attempt cap: {getActiveQuestMaxBalls(activePracticeQuest)} balls</span>
                             </div>
                           </div>
                         )}

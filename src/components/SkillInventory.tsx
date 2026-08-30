@@ -44,6 +44,7 @@ interface SkillInventoryProps {
   playerDots: number;
   onDeletePracticeQuest?: (questId: string) => void;
   onRerollPracticeQuest?: (questId: string, difficulty: "EASY" | "MEDIUM" | "CHALLENGING" | "MONARCH") => void;
+  onPermanentlyDeleteSkill?: (skill: SkillItem) => void;
 }
 
 export default function SkillInventory({
@@ -61,6 +62,7 @@ export default function SkillInventory({
   playerDots = 0,
   onDeletePracticeQuest,
   onRerollPracticeQuest,
+  onPermanentlyDeleteSkill,
 }: SkillInventoryProps) {
   const [selectedSkillId, setSelectedSkillId] = useState<string | null>(skills[0]?.id || null);
   const [customSkillName, setCustomSkillName] = useState("");
@@ -176,7 +178,11 @@ export default function SkillInventory({
       return;
     }
 
-    onUpdateSkillsState?.((prev) => prev.filter((skill) => skill.id !== secureAction.skill.id));
+    if (onPermanentlyDeleteSkill) {
+      onPermanentlyDeleteSkill(secureAction.skill);
+    } else {
+      onUpdateSkillsState?.((prev) => prev.filter((skill) => skill.id !== secureAction.skill.id));
+    }
     if (selectedSkillId === secureAction.skill.id) {
       setSelectedSkillId(activeSkills[0]?.id || null);
     }

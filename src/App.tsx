@@ -1868,13 +1868,13 @@ export default function App() {
       console.error("AI analyzing request failed:", err);
       // Fallback
       setAiAnalysis({
-        currentLimiter: "Over Spin Release Angle",
-        recommendedTraining: "Shadow Drift Grid Drill",
-        expectedGrowth: "+3.5% Arcane masteries",
-        analysisText: "Local fallback sensor calculated stable release. Maintain consistent revs to breach the next dynamic status threshold.",
-        systemAlert: "SYSTEM OPERATING IN LOCAL CHASSIS MODE",
-        forecastPercent: 74,
-        forecastReason: ["Verify internet or local system variables.", "Maintain target sequences inside the Evolution Chamber."],
+        currentLimiter: "Analysis service unavailable",
+        recommendedTraining: "Log another Evolution Chamber session",
+        expectedGrowth: "Recalculate when analytics reconnect",
+        analysisText: "No analytics response was received, so no synthetic prediction was generated. Your existing recorded progression remains unchanged.",
+        systemAlert: "ANALYTICS OFFLINE: NO FORECAST GENERATED",
+        forecastPercent: player.probabilityOfNextStatus,
+        forecastReason: ["The displayed value is the last saved player forecast, not a newly generated estimate.", "Reconnect analytics and record sessions for an updated history-based prediction."],
       });
     } finally {
       setIsAnalyzing(false);
@@ -2128,10 +2128,9 @@ export default function App() {
 
     setSkills((prev) => [...prev, item]);
 
-    // Synthesize 5 tailored quests inside the quest database for this new variation
-    const synthesizedQuests = QuestDatabaseManager.synthesizeQuestsForNewSkill(item, skills);
-    // Unlock them in the player's active practice quests pool
-    setPracticeQuests((prev) => [...prev, ...synthesizedQuests]);
+    // Registering a skill must not silently unlock a batch of player quests.
+    // The library remains available for synthesis or direct deployment, each of
+    // which produces exactly one pending quest through its own explicit action.
 
     const timestamp = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
     setLogs((prev) => [
@@ -2145,8 +2144,8 @@ export default function App() {
       {
         id: `lg-${Date.now() + 1}`,
         timestamp,
-        title: "SYNTHESIZER COMPLETED",
-        description: `Synthesized 5 customized quests and modified 3 compatible libraries for [${item.name}].`,
+        title: "SKILL LIBRARY READY",
+        description: `[${item.name}] can now receive one quest at a time through Quest Synthesis or Direct Deploy. No quests were auto-unlocked.`,
         severity: "info",
       },
       ...prev,
@@ -2157,6 +2156,38 @@ export default function App() {
 
   const boostAttributesFromDungeon = (record: DungeonRecord) => {
     setAttributes((prev) => AttributeEngine.applyDungeonSession(prev, record));
+  };
+
+  const handlePermanentlyDeleteSkill = (skill: SkillItem) => {
+    const skillName = skill.name.trim().toUpperCase();
+    const belongsToSkill = (quest: any) =>
+      quest.skillId === skill.id ||
+      (quest.skillName || "").trim().toUpperCase() === skillName ||
+      (quest.targetSkill || "").trim().toUpperCase() === skillName;
+
+    const removedQuestIds = new Set(practiceQuests.filter(belongsToSkill).map((quest) => quest.id));
+    setSkills((prev) => prev.filter((item) => item.id !== skill.id));
+    setPracticeQuests((prev) => prev.filter((quest) => !belongsToSkill(quest)));
+    if (activePracticeQuestId && removedQuestIds.has(activePracticeQuestId)) setActivePracticeQuestId(null);
+    setCompletedQuestIds((prev) => prev.filter((id) => !removedQuestIds.has(id)));
+    setFailedQuestIds((prev) => prev.filter((id) => !removedQuestIds.has(id)));
+    setRecentlyGeneratedIds((prev) => prev.filter((id) => !removedQuestIds.has(id)));
+
+    // Remove only library quests that belong to this skill; match history remains
+    // immutable career history and keeps its original delivery labels.
+    const remainingLibrary = QuestDatabaseManager.getQuests().filter((quest: any) => !belongsToSkill(quest));
+    QuestDatabaseManager.saveQuests(remainingLibrary);
+    setEvolutionHistory((prev) => prev.filter((entry: any) => !`${entry.title || ""} ${entry.description || ""}`.toUpperCase().includes(skillName)));
+    setLogs((prev) => [
+      {
+        id: `lg-${Date.now()}`,
+        timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+        title: "SKILL DATA PURGED",
+        description: `Removed ${skill.name} and its skill-specific quest and evolution records. Match history was preserved as an immutable career record.`,
+        severity: "warning",
+      },
+      ...prev.filter((entry) => !`${entry.title || ""} ${entry.description || ""}`.toUpperCase().includes(skillName)),
+    ]);
   };
 
   const evaluateActiveDungeonQuest = (record: any) => {
@@ -3318,6 +3349,7 @@ export default function App() {
                       playerDots={dungeons.reduce((acc, curr) => acc + (curr.dotBalls || 0), 0)}
                       onDeletePracticeQuest={handleDeletePracticeQuest}
                       onRerollPracticeQuest={handleRerollPracticeQuest}
+                      onPermanentlyDeleteSkill={handlePermanentlyDeleteSkill}
                     />
                   )}
 
