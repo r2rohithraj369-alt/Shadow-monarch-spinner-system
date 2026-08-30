@@ -2174,11 +2174,110 @@ export default function EvolutionChamber({
 
                 </div>
 
+                {/* MANUAL QUEST EXECUTION PANEL — always visible when a delivery is awaiting assessment */}
+                {activePracticeQuest && sessionActive && executionResult === "ACTIVE" && lastAssessedQuestDelivery < deliveryLogs.length && (() => {
+                  const target = getActiveQuestTarget(activePracticeQuest);
+                  const maxAttempts = getActiveQuestMaxBalls(activePracticeQuest);
+                  const currentAttempts = manualQuestProgress.executed + manualQuestProgress.missed;
+                  const awaitingBall = deliveryLogs[lastAssessedQuestDelivery];
+                  const awaitingOver = awaitingBall?.over || currentOverNumber;
+                  const awaitingBallNum = awaitingBall?.ballNum || (legalBallsInCurrentOver + 1);
+                  const completionPct = target > 0 ? Math.min(100, Math.round((manualQuestProgress.executed / target) * 100)) : 0;
+                  return (
+                    <motion.div
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      className="p-5 bg-gradient-to-br from-[#0a0a1a] to-[#0d0d20] border-2 border-[#7B2FFF]/50 rounded-2xl space-y-4 shadow-[0_0_30px_rgba(123,47,255,0.15)]"
+                    >
+                      {/* Header */}
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <span className="w-2.5 h-2.5 rounded-full bg-[#7B2FFF] animate-pulse" />
+                          <span className="text-[10px] font-mono text-[#7B2FFF] font-black uppercase tracking-widest">AWAITING EXECUTION RESULT</span>
+                        </div>
+                        <span className="text-[9px] font-mono text-gray-400 bg-black/40 px-2 py-1 rounded border border-gray-800">
+                          BALL {awaitingBallNum} · OVER {awaitingOver}
+                        </span>
+                      </div>
+
+                      {/* Delivery info */}
+                      <div className="p-3 bg-black/50 rounded-xl border border-gray-800/60">
+                        <div className="flex items-center justify-between text-[10px] font-mono">
+                          <span className="text-gray-400">Skill: <strong className="text-purple-300 uppercase">{awaitingBall?.skillName || activeSkill?.name}</strong></span>
+                          <span className="text-gray-400">Pitch: <strong className="text-yellow-400 uppercase">{awaitingBall?.length || selectedLengthMetric}</strong></span>
+                        </div>
+                      </div>
+
+                      {/* Progress display */}
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center font-mono">
+                        <div className="p-2 bg-cyan-950/20 border border-cyan-500/20 rounded-lg">
+                          <span className="text-[7px] text-cyan-400 block uppercase font-bold">Successful</span>
+                          <span className="text-sm font-black text-cyan-300">{manualQuestProgress.executed} / {target}</span>
+                        </div>
+                        <div className="p-2 bg-red-950/20 border border-red-500/20 rounded-lg">
+                          <span className="text-[7px] text-red-400 block uppercase font-bold">Missed</span>
+                          <span className="text-sm font-black text-red-300">{manualQuestProgress.missed}</span>
+                        </div>
+                        <div className="p-2 bg-amber-950/20 border border-amber-500/20 rounded-lg">
+                          <span className="text-[7px] text-amber-400 block uppercase font-bold">Attempts</span>
+                          <span className="text-sm font-black text-amber-300">{currentAttempts} / {maxAttempts}</span>
+                        </div>
+                        <div className="p-2 bg-purple-950/20 border border-purple-500/20 rounded-lg">
+                          <span className="text-[7px] text-purple-400 block uppercase font-bold">Remaining</span>
+                          <span className="text-sm font-black text-purple-300">{Math.max(0, target - manualQuestProgress.executed)}</span>
+                        </div>
+                      </div>
+
+                      {/* Completion bar */}
+                      <div className="space-y-1">
+                        <div className="flex justify-between text-[9px] font-mono">
+                          <span className="text-gray-500 uppercase">COMPLETION</span>
+                          <span className="text-[#7B2FFF] font-black">{completionPct}%</span>
+                        </div>
+                        <div className="h-2.5 bg-black border border-gray-800 rounded-full overflow-hidden">
+                          <div
+                            className="h-full bg-gradient-to-r from-[#7B2FFF] to-cyan-400 rounded-full transition-all duration-500"
+                            style={{ width: `${completionPct}%` }}
+                          />
+                        </div>
+                      </div>
+
+                      {/* EXECUTED / MISSED buttons */}
+                      <div className="grid grid-cols-2 gap-3 pt-1">
+                        <button
+                          type="button"
+                          onClick={() => markQuestExecution("EXECUTED")}
+                          disabled={currentAttempts >= maxAttempts}
+                          className="py-4 rounded-xl border-2 border-green-500/50 bg-green-500/10 text-green-300 hover:bg-green-500 hover:text-black font-mono text-sm font-black uppercase tracking-wider transition-all disabled:opacity-30 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                        >
+                          <CheckCircle className="w-5 h-5" />
+                          ✅ EXECUTED
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => markQuestExecution("MISSED")}
+                          disabled={currentAttempts >= maxAttempts}
+                          className="py-4 rounded-xl border-2 border-red-500/50 bg-red-500/10 text-red-300 hover:bg-red-500 hover:text-white font-mono text-sm font-black uppercase tracking-wider transition-all disabled:opacity-30 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                        >
+                          <XCircle className="w-5 h-5" />
+                          ❌ MISSED
+                        </button>
+                      </div>
+
+                      {/* Hint */}
+                      <p className="text-[9px] text-gray-500 font-mono text-center leading-relaxed">
+                        Record the result for Ball {awaitingBallNum} before logging the next delivery.
+                      </p>
+                    </motion.div>
+                  );
+                })()}
+
                 {/* LOG BALL TELEMETRY PRIMARY MASTER SUBMIT ACTION */}
                 <button
                   type="button"
                   onClick={handleLogDelivery}
-                  className="w-full py-4.5 bg-gradient-to-r from-red-600 to-[#7B2FFF] text-white font-mono text-xs font-black tracking-widest uppercase rounded-xl border border-red-500/20 shadow-[0_0_15px_rgba(123,47,255,0.25)] hover:bg-[#6c28eb] transition cursor-pointer flex items-center justify-center gap-2 block animate-pulse hover:animate-none"
+                  disabled={activePracticeQuest && sessionActive && executionResult === "ACTIVE" && lastAssessedQuestDelivery < deliveryLogs.length}
+                  className="w-full py-4.5 bg-gradient-to-r from-red-600 to-[#7B2FFF] text-white font-mono text-xs font-black tracking-widest uppercase rounded-xl border border-red-500/20 shadow-[0_0_15px_rgba(123,47,255,0.25)] hover:bg-[#6c28eb] transition cursor-pointer flex items-center justify-center gap-2 block animate-pulse hover:animate-none disabled:opacity-40 disabled:cursor-not-allowed disabled:animate-none"
                 >
                   <CheckCircle className="w-5 h-5 text-white" />
                   LOG BALL OUTCOME TELEMETRY
