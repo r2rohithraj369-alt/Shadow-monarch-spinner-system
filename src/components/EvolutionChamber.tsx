@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { 
   Target, RotateCcw, Swords, Compass, 
@@ -20,6 +20,7 @@ interface EvolutionChamberProps {
   practiceQuests: PracticeQuest[];
   activePracticeQuestId: string | null;
   onCompletePracticeQuest: (questId: string, resultStatus: "SUCCESS" | "FAILED", sessionReport?: any) => void;
+  onUpdatePracticeQuestProgress: (questId: string, progress: Pick<PracticeQuest, "executionProgress" | "executionMisses" | "executionHistory" | "lastAttemptStatus">) => void;
   onCompleteSession: (report: {
     oversCount: number;
     ballsLoggedCount: number;
@@ -272,6 +273,7 @@ export default function EvolutionChamber({
   practiceQuests = [],
   activePracticeQuestId = null,
   onCompletePracticeQuest,
+  onUpdatePracticeQuestProgress,
   onCompleteSession,
   isAnalyzing,
   initialHistory = [],
@@ -382,6 +384,8 @@ export default function EvolutionChamber({
   // A delivery may be assessed once only. This prevents a player from repeatedly
   // pressing Executed for a single ball and makes the manual tracker auditable.
   const [lastAssessedQuestDelivery, setLastAssessedQuestDelivery] = useState(0);
+  const [executionResult, setExecutionResult] = useState<"ACTIVE" | "COMPLETED" | "FAILED">("ACTIVE");
+  const completionReportedRef = useRef(false);
 
   // Recent completed review overlay
   const [completedSessionReview, setCompletedSessionReview] = useState<LoggedSession | null>(null);
@@ -429,6 +433,19 @@ export default function EvolutionChamber({
 
   const activeSkill = skills.find(s => s.id === activeSelectedSkillId) || skills[0];
 
+  useEffect(() => {
+    if (!activePracticeQuest) return;
+    setManualQuestProgress({
+      executed: activePracticeQuest.executionProgress || 0,
+      missed: activePracticeQuest.executionMisses || 0,
+    });
+    // Delivery logs are session-local; persisted history is the cross-session
+    // audit trail and must not block the first new delivery after a reload.
+    setLastAssessedQuestDelivery(0);
+    setExecutionResult(activePracticeQuest.completed ? "COMPLETED" : activePracticeQuest.lastAttemptStatus === "FAILED" ? "FAILED" : "ACTIVE");
+    completionReportedRef.current = activePracticeQuest.completed || activePracticeQuest.lastAttemptStatus === "FAILED";
+  }, [activePracticeQuestId]);
+
   const totalXpEarned = deliveryLogs.reduce((sum, l) => sum + l.xp, 0);
   const perfectBallsCount = deliveryLogs.filter(l => l.length === "Perfect Ball").length;
   const totalRunsConceded = deliveryLogs.reduce((sum, l) => sum + l.runsConceded, 0);
@@ -449,8 +466,13 @@ export default function EvolutionChamber({
       setRunsOffBat(0);
       setExtrasRunsConceded(0);
       setWicketDismissal("");
-      setManualQuestProgress({ executed: 0, missed: 0 });
+      setManualQuestProgress({
+        executed: activePracticeQuest?.executionProgress || 0,
+        missed: activePracticeQuest?.executionMisses || 0,
+      });
       setLastAssessedQuestDelivery(0);
+      setExecutionResult("ACTIVE");
+      completionReportedRef.current = false;
       setSessionActive(true);
       setCompletedSessionReview(null);
 
@@ -516,23 +538,48 @@ export default function EvolutionChamber({
 
   const getActiveQuestMaxBalls = (quest: PracticeQuest | null) => {
     if (!quest) return totalOversGoal * 6;
-    return quest.maxBalls ||
+    return quest.maximumAttempts || quest.maxBalls ||
       quest.requirements.maxBalls ||
       Number(quest.overs || quest.oversLength || quest.requirements.oversMin || totalOversGoal) * 6;
   };
 
   const markQuestExecution = (result: "EXECUTED" | "MISSED") => {
-    if (!activePracticeQuest || !sessionActive || deliveryLogs.length === 0 || lastAssessedQuestDelivery >= deliveryLogs.length) return;
-    if (deliveryLogs.length > getActiveQuestMaxBalls(activePracticeQuest)) return;
+    if (!activePracticeQuest || !sessionActive || executionResult !== "ACTIVE" || deliveryLogs.length === 0 || lastAssessedQuestDelivery >= deliveryLogs.length) return;
+    if (manualQuestProgress.executed + manualQuestProgress.missed >= getActiveQuestMaxBalls(activePracticeQuest)) return;
     playSystemClick();
-    setManualQuestProgress((prev) => ({
-      executed: prev.executed + (result === "EXECUTED" ? 1 : 0),
-      missed: prev.missed + (result === "MISSED" ? 1 : 0),
-    }));
+    const nextProgress = {
+      executed: manualQuestProgress.executed + (result === "EXECUTED" ? 1 : 0),
+      missed: manualQuestProgress.missed + (result === "MISSED" ? 1 : 0),
+    };
+    const attempts = nextProgress.executed + nextProgress.missed;
+    const target = getActiveQuestTarget(activePracticeQuest);
+    const maxAttempts = getActiveQuestMaxBalls(activePracticeQuest);
+    const history = [
+      ...(activePracticeQuest.executionHistory || []),
+      { ball: ((deliveryLogs.length - 1) % 6) + 1, over: Math.ceil(deliveryLogs.length / 6), result, timestamp: new Date().toISOString() }
+    ];
+    setManualQuestProgress(nextProgress);
     setLastAssessedQuestDelivery(deliveryLogs.length);
+    const status = target > 0 && nextProgress.executed >= target ? "SUCCESS" : attempts >= maxAttempts ? "FAILED" : "NONE";
+    onUpdatePracticeQuestProgress(activePracticeQuest.id, {
+      executionProgress: nextProgress.executed,
+      executionMisses: nextProgress.missed,
+      executionHistory: history,
+      lastAttemptStatus: status,
+    });
+    if (status !== "NONE" && !completionReportedRef.current) {
+      completionReportedRef.current = true;
+      setExecutionResult(status === "SUCCESS" ? "COMPLETED" : "FAILED");
+      onCompletePracticeQuest(activePracticeQuest.id, status, status === "SUCCESS" ? { xpEarned: activePracticeQuest.xpReward, masteryReward: activePracticeQuest.masteryReward } : undefined);
+    }
   };
 
   const handleLogDelivery = () => {
+    if (activePracticeQuest && sessionActive && executionResult === "ACTIVE" && deliveryLogs.length > lastAssessedQuestDelivery) {
+      playSystemError();
+      alert("RECORD EXECUTED OR MISSED FOR THE PREVIOUS DELIVERY BEFORE LOGGING THE NEXT BALL.");
+      return;
+    }
     if (!selectedLengthMetric) {
       playSystemError();
       alert("SELECT THE PITCH DELIVERY LANDING LENGTH FIRST.");
@@ -777,11 +824,15 @@ export default function EvolutionChamber({
         failures: evalRes.failures
       };
 
-      // Direct parent state update callback for active practice quests!
-      onCompletePracticeQuest(activePracticeQuest.id, evalRes.met ? "SUCCESS" : "FAILED", {
-        xpEarned: activePracticeQuest.xpReward,
-        masteryReward: activePracticeQuest.masteryReward
-      });
+      // Objective resolution is reported as soon as it is reached/exhausted.
+      // Avoid a second reward/failure event when the player later closes the session.
+      if (!completionReportedRef.current) {
+        completionReportedRef.current = true;
+        onCompletePracticeQuest(activePracticeQuest.id, evalRes.met ? "SUCCESS" : "FAILED", evalRes.met ? {
+          xpEarned: activePracticeQuest.xpReward,
+          masteryReward: activePracticeQuest.masteryReward
+        } : undefined);
+      }
     }
 
     // EVALUATE ACTIVE PRESSURE SCENARIO IF ATTEMPTED
@@ -1996,7 +2047,7 @@ export default function EvolutionChamber({
                               <button
                                 type="button"
                                 onClick={() => markQuestExecution("EXECUTED")}
-                                disabled={deliveryLogs.length === 0 || lastAssessedQuestDelivery >= deliveryLogs.length || deliveryLogs.length > getActiveQuestMaxBalls(activePracticeQuest)}
+                                disabled={executionResult !== "ACTIVE" || manualQuestProgress.executed + manualQuestProgress.missed >= getActiveQuestMaxBalls(activePracticeQuest) || deliveryLogs.length === 0 || lastAssessedQuestDelivery >= deliveryLogs.length}
                                 className="py-2 rounded border border-green-500/30 bg-green-500/10 text-green-300 hover:bg-green-400 hover:text-black text-[10px] font-mono font-black uppercase disabled:opacity-40 disabled:cursor-not-allowed"
                               >
                                 Executed
@@ -2004,7 +2055,7 @@ export default function EvolutionChamber({
                               <button
                                 type="button"
                                 onClick={() => markQuestExecution("MISSED")}
-                                disabled={deliveryLogs.length === 0 || lastAssessedQuestDelivery >= deliveryLogs.length || deliveryLogs.length > getActiveQuestMaxBalls(activePracticeQuest)}
+                                disabled={executionResult !== "ACTIVE" || manualQuestProgress.executed + manualQuestProgress.missed >= getActiveQuestMaxBalls(activePracticeQuest) || deliveryLogs.length === 0 || lastAssessedQuestDelivery >= deliveryLogs.length}
                                 className="py-2 rounded border border-red-500/30 bg-red-500/10 text-red-300 hover:bg-red-500 hover:text-white text-[10px] font-mono font-black uppercase disabled:opacity-40 disabled:cursor-not-allowed"
                               >
                                 Missed
@@ -2014,16 +2065,34 @@ export default function EvolutionChamber({
                               <span>Missed: {manualQuestProgress.missed}</span>
                               <span>{lastAssessedQuestDelivery < deliveryLogs.length ? "Record this delivery" : "Delivery recorded"} · Attempt cap: {getActiveQuestMaxBalls(activePracticeQuest)} balls</span>
                             </div>
+                            <div className="grid grid-cols-2 gap-2 text-[9px] pt-1 border-t border-gray-900">
+                              <span>Attempts: <strong className="text-white">{manualQuestProgress.executed + manualQuestProgress.missed} / {getActiveQuestMaxBalls(activePracticeQuest)}</strong></span>
+                              <span>Remaining: <strong className="text-white">{Math.max(0, getActiveQuestTarget(activePracticeQuest) - manualQuestProgress.executed)} successes</strong></span>
+                              <span>Window: <strong className="text-white">Over {Math.min(Math.ceil(Math.max(1, manualQuestProgress.executed + manualQuestProgress.missed) / 6), Number(activePracticeQuest.maximumOvers || activePracticeQuest.overs || activePracticeQuest.oversLength || activePracticeQuest.requirements.oversMin || totalOversGoal))} / {activePracticeQuest.maximumOvers || activePracticeQuest.overs || activePracticeQuest.oversLength || activePracticeQuest.requirements.oversMin || totalOversGoal}</strong></span>
+                              <span>Ball: <strong className="text-white">{((manualQuestProgress.executed + manualQuestProgress.missed) % 6) + 1} / 6</strong></span>
+                            </div>
+                            {executionResult !== "ACTIVE" && <div className={`p-2 rounded text-center font-black uppercase ${executionResult === "COMPLETED" ? "bg-emerald-950/30 text-emerald-300 border border-emerald-500/30" : "bg-red-950/30 text-red-300 border border-red-500/30"}`}>{executionResult === "COMPLETED" ? "Quest complete — objective achieved" : "Objective not achieved — attempts exhausted"}</div>}
                           </div>
                         )}
                         
                         <div className="space-y-1.5">
                           {activePracticeQuest.requirements.oversMin !== undefined && (
                             <div className="flex items-center justify-between text-gray-300">
-                              <span>Overs goal (min):</span>
-                              <span className={totalOversGoal >= activePracticeQuest.requirements.oversMin ? "text-green-405 text-green-405 text-green-400 font-bold" : "text-yellow-500 font-bold"}>
-                                {totalOversGoal} / {activePracticeQuest.requirements.oversMin} overs
+                              <span>Attempt window:</span>
+                              <span className="text-cyan-400 font-bold">
+                                {activePracticeQuest.maximumOvers || activePracticeQuest.overs || activePracticeQuest.oversLength || activePracticeQuest.requirements.oversMin} overs / {getActiveQuestMaxBalls(activePracticeQuest)} balls
                               </span>
+                            </div>
+                          )}
+
+                          {activePracticeQuest.objectiveDescription && <p className="text-[9px] text-gray-400 leading-relaxed border-t border-gray-900 pt-2"><strong className="text-purple-300">Objective:</strong> {activePracticeQuest.objectiveDescription}</p>}
+
+                          {(activePracticeQuest.executionHistory || []).length > 0 && (
+                            <div className="border-t border-gray-900 pt-2 space-y-1">
+                              <span className="text-[8.5px] text-purple-400 uppercase font-black">Delivery telemetry</span>
+                              <div className="max-h-24 overflow-y-auto space-y-1 text-[9px] text-gray-400">
+                                {(activePracticeQuest.executionHistory || []).slice(-12).reverse().map((entry, index) => <div key={`${entry.timestamp}-${index}`} className="flex justify-between"><span>O{entry.over} B{entry.ball}</span><strong className={entry.result === "EXECUTED" ? "text-emerald-400" : "text-red-400"}>{entry.result === "EXECUTED" ? "EXECUTED ✓" : "MISSED ✕"}</strong></div>)}
+                              </div>
                             </div>
                           )}
 

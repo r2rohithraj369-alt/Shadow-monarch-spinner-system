@@ -274,6 +274,14 @@ export interface PracticeQuest {
   overs?: number | string;
   executionProgress?: number;
   executionMisses?: number;
+  executionHistory?: Array<{ ball: number; over: number; result: "EXECUTED" | "MISSED"; timestamp: string }>;
   targetSuccessCount?: number;
   maxBalls?: number;
+  objectiveType?: string;
+  objectiveDescription?: string;
+  completionRule?: "TOTAL_SUCCESSES" | "PER_OVER" | "MULTI_CONDITION";
+  maximumOvers?: number;
+  maximumAttempts?: number;
+  successfulPerOver?: number;
+  multiConditionData?: Array<{ label: string; required: number; maximum?: number }>;
 }

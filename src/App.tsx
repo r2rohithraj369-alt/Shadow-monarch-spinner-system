@@ -1466,6 +1466,9 @@ export default function App() {
 
   const handleCompletePracticeQuest = (questId: string, resultStatus: "SUCCESS" | "FAILED", bounty?: { xpEarned: number; masteryReward: number }) => {
     let targetQuest = practiceQuests.find((q) => q.id === questId);
+    // Completion may be reported by the real-time objective engine and by a
+    // session close event. Rewards must only ever be granted once.
+    if (targetQuest?.completed && resultStatus === "SUCCESS") return;
     
     if (!targetQuest) {
       // Resolve from built-in, daily, or weekly library
@@ -1597,6 +1600,13 @@ export default function App() {
         ...prev,
       ]);
     }
+  };
+
+  const handleUpdatePracticeQuestProgress = (
+    questId: string,
+    progress: Pick<PracticeQuest, "executionProgress" | "executionMisses" | "executionHistory" | "lastAttemptStatus">
+  ) => {
+    setPracticeQuests((prev) => prev.map((quest) => quest.id === questId ? { ...quest, ...progress } : quest));
   };
 
   const handleGeneratePracticeQuest = (
@@ -3319,6 +3329,7 @@ export default function App() {
                       practiceQuests={practiceQuests}
                       activePracticeQuestId={activePracticeQuestId}
                       onCompletePracticeQuest={handleCompletePracticeQuest}
+                      onUpdatePracticeQuestProgress={handleUpdatePracticeQuestProgress}
                       onCompleteSession={handleCompleteTraining} 
                       isAnalyzing={isAnalyzing} 
                       initialHistory={evolutionHistory}
