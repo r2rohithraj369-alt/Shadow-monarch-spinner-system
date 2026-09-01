@@ -1,5 +1,10 @@
 import { PracticeQuest } from "../types";
 import { INITIAL_PRACTICE_QUESTS } from "../App";
+import {
+  getQuestSuccessTarget,
+  normalizeQuestDefinition,
+  validateQuestDefinition
+} from "./questCore";
 
 export interface CustomQuest extends PracticeQuest {
   arena: string;
@@ -254,6 +259,8 @@ export function analyzeAndGenerateQuest(questData: {
   objectivesText: string;
   id?: string;
   mode?: string;
+  toBeExecuted?: number | string;
+  totalBalls?: number | string;
 }): CustomQuest {
   const difficulty = questData.difficulty;
   const overs = questData.overs;
@@ -343,7 +350,7 @@ export function analyzeAndGenerateQuest(questData: {
   else if (lowerSkill.includes("flipper")) skillId = "s3";
   else if (lowerSkill.includes("top")) skillId = "s5";
 
-  return {
+  const result: CustomQuest = {
     id: questData.id || `qdb-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
     skillId,
     skillName: skill.toUpperCase(),
@@ -377,6 +384,64 @@ export function analyzeAndGenerateQuest(questData: {
     mode: questData.mode || "General",
     overs: overs
   };
+
+  // Canonical quest window + success requirement (NEW field format).
+  // Explicit `toBeExecuted` / `totalBalls` win; otherwise derive a safe
+  // consistent value from the parsed objective requirements. Never overwrite
+  // an explicit value with an inferred fallback.
+  let toBeExecuted = 0;
+  if (questData.toBeExecuted !== undefined && questData.toBeExecuted !== "") {
+    toBeExecuted = Number(questData.toBeExecuted);
+  } else if (Number(parsedReqs.targetSuccessCount ?? 0) > 0) {
+    toBeExecuted = Number(parsedReqs.targetSuccessCount);
+  } else {
+    toBeExecuted = Number(
+      parsedReqs.perfectBallsNeeded || parsedReqs.closeOrBetterNeeded ||
+      parsedReqs.dotBallsNeeded || parsedReqs.wicketsNeeded ||
+      parsedReqs.consecutivePerfectBalls || 0
+    );
+  }
+  if (isNaN(toBeExecuted) || toBeExecuted < 0) toBeExecuted = 0;
+
+  let totalBalls = 0;
+  if (questData.totalBalls !== undefined && questData.totalBalls !== "") {
+    totalBalls = Number(questData.totalBalls);
+  } else if (typeof overs === "number" && overs > 0) {
+    totalBalls = overs * 6;
+  } else if (toBeExecuted > 0) {
+    totalBalls = toBeExecuted * 3;
+  } else {
+    totalBalls = 6;
+  }
+  if (isNaN(totalBalls) || totalBalls <= 0) {
+    totalBalls = typeof overs === "number" && overs > 0 ? overs * 6 : 6;
+  }
+
+  const maxOvers = typeof overs === "number" && overs > 0 ? overs : Math.max(1, Math.ceil(totalBalls / 6));
+  const qualCount = Object.keys(parsedReqs).filter(
+    (k) => k !== "oversMin" && k !== "noWidesOrNoBalls" &&
+      parsedReqs[k] !== undefined && parsedReqs[k] !== false && Number(parsedReqs[k] ?? 0) > 0
+  ).length;
+  const completionRule: "TOTAL_SUCCESSES" | "PER_OVER" | "MULTI_CONDITION" =
+    qualCount > 1 ? "MULTI_CONDITION" : "TOTAL_SUCCESSES";
+
+  const canonical: CustomQuest = {
+    ...result,
+    targetSuccessCount: toBeExecuted,
+    maxBalls: totalBalls,
+    maximumAttempts: totalBalls,
+    maximumOvers: maxOvers,
+    oversLength: maxOvers,
+    completionRule,
+    requirements: {
+      ...result.requirements,
+      oversMin: maxOvers !== 0 ? maxOvers : result.requirements.oversMin,
+      targetSuccessCount: toBeExecuted,
+      maxBalls: totalBalls
+    }
+  };
+
+  return normalizeQuestDefinition(canonical) as CustomQuest;
 }
 
 // Automatic analysis for Pressure Scenarios
@@ -888,6 +953,12 @@ export class QuestDatabaseManager {
   static upsertQuest(questData: any): CustomQuest {
     const quests = this.getQuests();
     const analyzed = analyzeAndGenerateQuest(questData);
+    // Validate before persisting — a malformed quest must never silently become
+    // SUCCESS. Show the user exactly what is wrong.
+    const errors = validateQuestDefinition(analyzed);
+    if (errors.length > 0) {
+      throw new Error(errors.join(" "));
+    }
     const existingIndex = quests.findIndex((q) => q.id === analyzed.id);
     if (existingIndex >= 0) {
       quests[existingIndex] = analyzed;
@@ -1472,6 +1543,8 @@ export class QuestDatabaseManager {
       let overs = "";
       let skillName = "";
       let difficulty = "";
+      let toBeExecuted = "";
+      let totalBalls = "";
 
       // Parse fields
       blockLines.forEach((rawLine) => {
@@ -1508,6 +1581,16 @@ export class QuestDatabaseManager {
               break;
             case "difficulty":
               difficulty = val;
+              break;
+            case "to be executed":
+            case "tobeexecuted":
+            case "to_be_executed":
+              toBeExecuted = val;
+              break;
+            case "total balls":
+            case "totalballs":
+            case "total_balls":
+              totalBalls = val;
               break;
           }
         } else {
@@ -1595,6 +1678,41 @@ export class QuestDatabaseManager {
         }
       }
 
+      // Validate the structured record before it becomes ready to ingest.
+      // An invalid quest (e.g. to-be-executed > total balls) must be reported,
+      // never silently saved or auto-SUCCESS.
+      let validationErrors: string[] = [];
+      let validationOk = true;
+      try {
+        const compiled = analyzeAndGenerateQuest({
+          title,
+          description,
+          category: finalCategory as "Practice" | "Challenge" | "Monarch" | "Training",
+          arena: finalArena,
+          overs: finalOvers,
+          targetSkill: finalSkill,
+          difficulty: finalDiff as "EASY" | "MEDIUM" | "CHALLENGING" | "MONARCH",
+          objectivesText: description, // Default objectives to description
+          mode: finalMode,
+          toBeExecuted: toBeExecuted !== "" ? toBeExecuted : undefined,
+          totalBalls: totalBalls !== "" ? totalBalls : undefined
+        });
+        validationErrors = validateQuestDefinition(compiled);
+        validationOk = validationErrors.length === 0;
+      } catch {
+        validationErrors = ["Invalid quest record (unexpected error during compilation)."];
+        validationOk = false;
+      }
+
+      if (!validationOk) {
+        skippedQuests.push({
+          title,
+          reason: `Invalid Quest: ${validationErrors[0] || "compile failed"}`,
+          rawBlock: rawBlockText
+        });
+        return;
+      }
+
       readyQuests.push({
         title,
         description,
@@ -1605,6 +1723,8 @@ export class QuestDatabaseManager {
         targetSkill: finalSkill,
         difficulty: finalDiff,
         objectivesText: description, // Default objectives to description
+        toBeExecuted: toBeExecuted !== "" ? toBeExecuted : undefined,
+        totalBalls: totalBalls !== "" ? totalBalls : undefined,
         rawBlock: rawBlockText
       });
     });
@@ -1627,7 +1747,9 @@ export class QuestDatabaseManager {
         targetSkill: qData.targetSkill,
         difficulty: qData.difficulty,
         objectivesText: qData.objectivesText,
-        mode: qData.mode
+        mode: qData.mode,
+        toBeExecuted: qData.toBeExecuted,
+        totalBalls: qData.totalBalls
       });
       questsAdded.push(newQuest);
     });

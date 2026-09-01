@@ -155,17 +155,25 @@ export default function QuestDatabase({ onRefreshDirectives, onNavigateToTab, sk
     playSystemDing();
 
     const isEditing = !!editingQuest.id;
-    QuestDatabaseManager.upsertQuest({
-      id: editingQuest.id,
-      title: editingQuest.name,
-      description: editingQuest.description || "",
-      category: editingQuest.category || "Practice",
-      arena: editingQuest.arena || "Sovereign Obelisk Grid",
-      overs: Number(editingQuest.requirements?.oversMin || 2),
-      targetSkill: editingQuest.targetSkill || "LEG BREAK",
-      difficulty: editingQuest.difficulty || "MEDIUM",
-      objectivesText: editingQuest.objectivesText || editingQuest.description || "",
-    });
+    try {
+      QuestDatabaseManager.upsertQuest({
+        id: editingQuest.id,
+        title: editingQuest.name,
+        description: editingQuest.description || "",
+        category: editingQuest.category || "Practice",
+        arena: editingQuest.arena || "Sovereign Obelisk Grid",
+        overs: Number(editingQuest.requirements?.oversMin || 2),
+        targetSkill: editingQuest.targetSkill || "LEG BREAK",
+        difficulty: editingQuest.difficulty || "MEDIUM",
+        objectivesText: editingQuest.objectivesText || editingQuest.description || "",
+      });
+    } catch (validationError: any) {
+      // The compiler rejected the quest definition — surface the exact failures
+      // instead of crashing or silently persisting a broken record.
+      playSystemError();
+      alert(`Quest rejected by the compiler:\n\n${validationError?.message || validationError}`);
+      return;
+    }
 
     addRecentLog(`${isEditing ? "Updated" : "Added"} Quest: ${editingQuest.name}`);
     setIsQuestModalOpen(false);
@@ -180,17 +188,23 @@ export default function QuestDatabase({ onRefreshDirectives, onNavigateToTab, sk
       id: `qdb-dup-${Date.now()}`,
       name: `${quest.name} (Copy)`,
     };
-    QuestDatabaseManager.upsertQuest({
-      id: duplicated.id,
-      title: duplicated.name,
-      description: duplicated.description,
-      category: duplicated.category,
-      arena: duplicated.arena,
-      overs: Number(duplicated.requirements?.oversMin || 2),
-      targetSkill: duplicated.targetSkill,
-      difficulty: duplicated.difficulty,
-      objectivesText: duplicated.objectivesText,
-    });
+    try {
+      QuestDatabaseManager.upsertQuest({
+        id: duplicated.id,
+        title: duplicated.name,
+        description: duplicated.description,
+        category: duplicated.category,
+        arena: duplicated.arena,
+        overs: Number(duplicated.requirements?.oversMin || 2),
+        targetSkill: duplicated.targetSkill,
+        difficulty: duplicated.difficulty,
+        objectivesText: duplicated.objectivesText,
+      });
+    } catch (validationError: any) {
+      playSystemError();
+      alert(`Duplicate rejected by the compiler:\n\n${validationError?.message || validationError}`);
+      return;
+    }
     addRecentLog(`Duplicated Quest: ${quest.name}`);
     notifyChanges();
   };
@@ -296,31 +310,54 @@ export default function QuestDatabase({ onRefreshDirectives, onNavigateToTab, sk
     if (!parsedPreview) return;
     playSystemDing();
     
-    // Add quests from parsedPreview.readyQuests
+    // Add quests from parsedPreview.readyQuests. A quest that fails compiler
+    // validation is rejected here — never silently persisted as SUCCESS.
     const questsAdded: CustomQuest[] = [];
+    const rejectedQuests: Array<{ title: string; reason: string; description?: string; rawBlock: string }> = [];
     parsedPreview.readyQuests.forEach((qData) => {
-      const newQuest = QuestDatabaseManager.upsertQuest({
-        title: qData.title,
-        description: qData.description,
-        category: qData.category,
-        arena: qData.arena,
-        overs: qData.overs,
-        targetSkill: qData.targetSkill,
-        difficulty: qData.difficulty,
-        objectivesText: qData.objectivesText,
-        mode: qData.mode
-      });
-      questsAdded.push(newQuest);
+      try {
+        const newQuest = QuestDatabaseManager.upsertQuest({
+          title: qData.title,
+          description: qData.description,
+          category: qData.category,
+          arena: qData.arena,
+          overs: qData.overs,
+          targetSkill: qData.targetSkill,
+          difficulty: qData.difficulty,
+          objectivesText: qData.objectivesText,
+          mode: qData.mode,
+          // Forward the explicit quest window so the ingested record matches
+          // exactly what the compiler validated in the preview step. Dropping
+          // these would silently re-derive a different targetSuccessCount /
+          // maxBalls than the one shown to the operator.
+          toBeExecuted: qData.toBeExecuted,
+          totalBalls: qData.totalBalls
+        });
+        questsAdded.push(newQuest);
+      } catch (validationError: any) {
+        rejectedQuests.push({
+          title: qData.title || "Untitled Card",
+          reason: `Validation: ${validationError?.message || "invalid quest definition"}`,
+          description: qData.description,
+          rawBlock: qData.rawBlock || ""
+        });
+      }
     });
 
     // Record results
     setImportResultData({
       successCount: questsAdded.length,
-      skippedCount: parsedPreview.skippedQuests.length,
-      skippedReasons: parsedPreview.skippedQuests
+      skippedCount: parsedPreview.skippedQuests.length + rejectedQuests.length,
+      skippedReasons: [...parsedPreview.skippedQuests, ...rejectedQuests]
     });
 
-    addRecentLog(`Bulk Imported ${questsAdded.length} Quests, Skipped ${parsedPreview.skippedQuests.length}`);
+    if (questsAdded.length > 0) {
+      playSystemDing();
+    } else {
+      playSystemError();
+    }
+
+    addRecentLog(`Bulk Imported ${questsAdded.length} Quests, Skipped ${parsedPreview.skippedQuests.length + rejectedQuests.length}`);
     setBulkImportStep("RESULT");
     notifyChanges();
   };
@@ -2032,7 +2069,7 @@ Objectives: Keep run rate below 6.5.`);
                     <div className="bg-rose-950/5 border border-rose-500/20 rounded-xl p-4 space-y-2">
                       <span className="text-[10px] text-rose-400 font-bold block uppercase tracking-wider">Skipped / Duplicates ({parsedPreview.skippedQuests.length})</span>
                       <p className="text-[10px] text-zinc-500 leading-normal">
-                        Skipped due to duplicate title/description or lack of minimum required fields.
+                        Skipped due to duplicate title/description, missing required fields, or failed compiler validation.
                       </p>
                     </div>
                   </div>
@@ -2046,7 +2083,9 @@ Objectives: Keep run rate below 6.5.`);
                           <div key={idx} className="border-b border-zinc-900/60 pb-1.5 last:border-0 last:pb-0">
                             <span className="text-rose-400 font-bold font-mono">[{skipped.reason}]</span>{" "}
                             <span className="text-zinc-200 font-bold font-mono">{skipped.title || "Untitled Card"}</span>
-                            <p className="text-zinc-500 mt-0.5">{skipped.description || "No description provided."}</p>
+                            <p className="text-zinc-500 mt-0.5 break-words whitespace-normal">
+                              {skipped.description || (skipped.rawBlock ? String(skipped.rawBlock).replace(/\s+/g, " ").trim().slice(0, 160) : "No description provided.")}
+                            </p>
                           </div>
                         ))}
                       </div>

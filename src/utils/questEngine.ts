@@ -460,6 +460,10 @@ export function generateHighlyVariedQuest(
   const questName = `${sName}: ${theme} [${selectedTemplates.map(t => t.name).join(" & ")}]`;
   const description = `SYSTEM DIRECTIVE for ${sName} training inside the ${arena}. Weave your trajectory under the ${difficulty} parameters of theme "${theme}". Complete the following session goals: ${objectivesSentence || "conduct a standard spelling calibration."}.`;
 
+  // Determine completion rule based on requirements
+  const hasMultipleConditions = Object.keys(reqs).filter(k => k !== "oversMin" && k !== "noWidesOrNoBalls").length > 1;
+  const completionRule: "TOTAL_SUCCESSES" | "PER_OVER" | "MULTI_CONDITION" = hasMultipleConditions ? "MULTI_CONDITION" : "TOTAL_SUCCESSES";
+
   return {
     id: `pq-dyn-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
     skillId: skill.name.toLowerCase(),
@@ -475,6 +479,12 @@ export function generateHighlyVariedQuest(
     attemptsCount: 0,
     lastAttemptStatus: "NONE",
     chamberMode: chosenCombo.mode,
-    oversLength: chosenCombo.overs
+    oversLength: chosenCombo.overs,
+    overs: chosenCombo.overs,
+    completionRule,
+    maximumOvers: chosenCombo.overs,
+    maximumAttempts: chosenCombo.overs * 6,
+    targetSuccessCount: reqs.perfectBallsNeeded || reqs.closeOrBetterNeeded || reqs.dotBallsNeeded || reqs.wicketsNeeded || 0,
+    maxBalls: chosenCombo.overs * 6
   };
 }

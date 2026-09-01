@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { 
@@ -63,6 +64,26 @@ interface LoggedSession {
     questName: string;
     met: boolean;
     failures: string[];
+  };
+  // Quest snapshot captured at session conclusion. Authoritative copy of the
+  // quest objective, limits and manual execution assessment so the final
+  // review remains accurate even if the active quest is cleared afterwards.
+  questMeta?: {
+    questId: string;
+    questName: string;
+    skillName: string;
+    objective: string;
+    target: number;
+    maxBalls: number;
+    maxOvers: number;
+    xpReward: number;
+    masteryReward: number;
+    completionRule: string;
+    executed: number;
+    missed: number;
+    qualifyingSuccess: number;
+    requirements?: Record<string, any>;
+    difficulty: string;
   };
   pressureScenario?: {
     desc: string;
@@ -180,6 +201,11 @@ import {
   getScenarioTitle
 } from "../utils/scenarioEngine";
 import { QuestDatabaseManager } from "../utils/questDatabaseManager";
+import {
+  computeQualifyingSuccessCount,
+  getQuestSuccessDefinition,
+  isQualifyingDelivery
+} from "../utils/questCore";
 
 export function generatePressureScenario(overs: number, difficulty: "EASY" | "MEDIUM" | "DIFFICULT" | "EXTREME"): PressureScenarioData {
   const dbScenarios = QuestDatabaseManager.getPressureScenarios();
@@ -227,30 +253,73 @@ export function evaluateQuestCompletion(quest: PracticeQuest, sessionStats: {
   closeOrBetter: number;
   hasExtras: boolean;
   skillWickets: Record<string, number>;
-}) {
+}, qualifyingSuccessCount?: number) {
   const failures: string[] = [];
   const req = quest.requirements;
-  
+
+  // Error handling: malformed quest with no measurable requirements
+  const hasMeasurableRequirement = req.perfectBallsNeeded !== undefined
+    || req.closeOrBetterNeeded !== undefined
+    || req.wicketsNeeded !== undefined
+    || req.dotBallsNeeded !== undefined
+    || req.runsMaxLte !== undefined
+    || req.skillsSpecificWickets !== undefined;
+
+  if (!hasMeasurableRequirement) {
+    // Quest has no measurable success criteria — cannot be completed
+    failures.push("Quest has no measurable success criteria. This quest configuration is invalid.");
+    return { met: false, failures };
+  }
+
+  // Error handling: zero target means impossible quest
+  if (req.perfectBallsNeeded !== undefined && req.perfectBallsNeeded <= 0) {
+    failures.push("Quest requires 0 perfect balls — invalid configuration.");
+  }
+  if (req.closeOrBetterNeeded !== undefined && req.closeOrBetterNeeded <= 0) {
+    failures.push("Quest requires 0 close-or-better balls — invalid configuration.");
+  }
+  if (req.wicketsNeeded !== undefined && req.wicketsNeeded <= 0) {
+    failures.push("Quest requires 0 wickets — invalid configuration.");
+  }
+  if (req.dotBallsNeeded !== undefined && req.dotBallsNeeded <= 0) {
+    failures.push("Quest requires 0 dot balls — invalid configuration.");
+  }
+
+  // Standard requirement checks
   if (req.oversMin !== undefined && sessionStats.overs < req.oversMin) {
     failures.push(`Session span of ${sessionStats.overs} overs is less than the required ${req.oversMin} overs.`);
   }
-  if (req.perfectBallsNeeded !== undefined && sessionStats.perfect < req.perfectBallsNeeded) {
+  if (req.perfectBallsNeeded !== undefined && req.perfectBallsNeeded > 0 && sessionStats.perfect < req.perfectBallsNeeded) {
     failures.push(`Landed ${sessionStats.perfect} Perfect Balls of ${quest.skillName} (Needs at least ${req.perfectBallsNeeded}).`);
   }
-  if (req.closeOrBetterNeeded !== undefined && sessionStats.closeOrBetter < req.closeOrBetterNeeded) {
+  if (req.closeOrBetterNeeded !== undefined && req.closeOrBetterNeeded > 0 && sessionStats.closeOrBetter < req.closeOrBetterNeeded) {
     failures.push(`Landed ${sessionStats.closeOrBetter} Close or Better Balls (Needs at least ${req.closeOrBetterNeeded}).`);
   }
-  if (req.wicketsNeeded !== undefined && sessionStats.wickets < req.wicketsNeeded) {
+  if (req.wicketsNeeded !== undefined && req.wicketsNeeded > 0 && sessionStats.wickets < req.wicketsNeeded) {
     failures.push(`Secured ${sessionStats.wickets} wickets inside the session (Needs at least ${req.wicketsNeeded}).`);
   }
   if (req.runsMaxLte !== undefined && sessionStats.runs > req.runsMaxLte) {
     failures.push(`Conceded ${sessionStats.runs} runs, which exceeds the strict target limit of ${req.runsMaxLte} runs.`);
   }
-  if (req.dotBallsNeeded !== undefined && sessionStats.dots < req.dotBallsNeeded) {
+  if (req.dotBallsNeeded !== undefined && req.dotBallsNeeded > 0 && sessionStats.dots < req.dotBallsNeeded) {
     failures.push(`Recorded ${sessionStats.dots} dot balls (Needs at least ${req.dotBallsNeeded}).`);
   }
   if (req.noWidesOrNoBalls !== undefined && req.noWidesOrNoBalls && sessionStats.hasExtras) {
     failures.push(`Conceded extra deliveries (No wides/no-balls allowed).`);
+  }
+
+  // General qualifying-count target (targetSuccessCount / toBeExecuted).
+  // Applied only when no specific qualifying condition already defines the
+  // objective; otherwise the specific requirement above is authoritative.
+  const hasSpecificQualifyingReq =
+    req.perfectBallsNeeded !== undefined || req.closeOrBetterNeeded !== undefined ||
+    req.dotBallsNeeded !== undefined || req.wicketsNeeded !== undefined ||
+    req.skillsSpecificWickets !== undefined || req.consecutivePerfectBalls !== undefined;
+  if (req.targetSuccessCount !== undefined && req.targetSuccessCount > 0 && !hasSpecificQualifyingReq) {
+    const achieved = qualifyingSuccessCount ?? sessionStats.perfect;
+    if (achieved < req.targetSuccessCount) {
+      failures.push(`Required ${req.targetSuccessCount} qualifying deliveries but achieved only ${achieved}.`);
+    }
   }
   
   if (req.skillsSpecificWickets !== undefined) {
@@ -551,27 +620,20 @@ export default function EvolutionChamber({
       executed: manualQuestProgress.executed + (result === "EXECUTED" ? 1 : 0),
       missed: manualQuestProgress.missed + (result === "MISSED" ? 1 : 0),
     };
-    const attempts = nextProgress.executed + nextProgress.missed;
-    const target = getActiveQuestTarget(activePracticeQuest);
-    const maxAttempts = getActiveQuestMaxBalls(activePracticeQuest);
     const history = [
       ...(activePracticeQuest.executionHistory || []),
       { ball: ((deliveryLogs.length - 1) % 6) + 1, over: Math.ceil(deliveryLogs.length / 6), result, timestamp: new Date().toISOString() }
     ];
     setManualQuestProgress(nextProgress);
     setLastAssessedQuestDelivery(deliveryLogs.length);
-    const status = target > 0 && nextProgress.executed >= target ? "SUCCESS" : attempts >= maxAttempts ? "FAILED" : "NONE";
+    // Only update manual assessment progress here. Final quest completion is
+    // determined in handleConcludeSession using the actual landing outcomes.
     onUpdatePracticeQuestProgress(activePracticeQuest.id, {
       executionProgress: nextProgress.executed,
       executionMisses: nextProgress.missed,
       executionHistory: history,
-      lastAttemptStatus: status,
+      lastAttemptStatus: "NONE",
     });
-    if (status !== "NONE" && !completionReportedRef.current) {
-      completionReportedRef.current = true;
-      setExecutionResult(status === "SUCCESS" ? "COMPLETED" : "FAILED");
-      onCompletePracticeQuest(activePracticeQuest.id, status, status === "SUCCESS" ? { xpEarned: activePracticeQuest.xpReward, masteryReward: activePracticeQuest.masteryReward } : undefined);
-    }
   };
 
   const handleLogDelivery = () => {
@@ -654,6 +716,35 @@ export default function EvolutionChamber({
 
     const updatedLogs = [...deliveryLogs, newDelivery];
     setDeliveryLogs(updatedLogs);
+
+    // EARLY SUCCESS / IMPOSSIBLE-STATE handling.
+    // When the objective is already satisfied (e.g. 5/5 reached on ball 9) the
+    // quest concludes early — no meaningless extra deliveries are required.
+    // When success is mathematically impossible with the remaining attempts, the
+    // quest also concludes (as FAILED) instead of staying active indefinitely.
+    // This only runs when the current delivery is NOT the session-ending ball
+    // (which is handled by the normal over-wrap conclude below to avoid double
+    // reporting).
+    const willWrap = !isExtra && (legalBallsInCurrentOver + 1) >= 6 && (currentOverNumber + 1) > totalOversGoal;
+    if (!willWrap && activePracticeQuest && sessionActive) {
+      const qTarget = getActiveQuestTarget(activePracticeQuest) || 0;
+      const qAchieved = computeQualifyingSuccessCount(activePracticeQuest.requirements || {}, updatedLogs);
+      const qMaxAttempts = getActiveQuestMaxBalls(activePracticeQuest) || totalOversGoal * 6;
+      const qUsed = updatedLogs.length;
+      const qRemaining = Math.max(0, qMaxAttempts - qUsed);
+      if (qTarget > 0 && qAchieved >= qTarget) {
+        // OBJECTIVE COMPLETE — conclude the session successfully.
+        setExecutionResult("COMPLETED");
+        handleConcludeSession(updatedLogs);
+        return;
+      }
+      if (qTarget > 0 && (qTarget - qAchieved) > qRemaining) {
+        // Success is now impossible with the remaining attempts — fail safely.
+        setExecutionResult("FAILED");
+        handleConcludeSession(updatedLogs);
+        return;
+      }
+    }
 
     // Update ball counters
     if (!isExtra) {
@@ -782,6 +873,9 @@ export default function EvolutionChamber({
 
     // EVALUATE ACTIVE PRACTICE QUEST IF ATTEMPTED INSIDE THE CHAMBER
     let questStatusObj: LoggedSession["questStatus"] = undefined;
+    // Authoritative qualifying-success count derived from actual landing
+    // outcomes via the canonical qualifying-condition rules (not from EXECUTED).
+    let qualifyingSuccessCount = 0;
     if (activePracticeQuest) {
       const skillWickets: Record<string, number> = {};
       logsToUse.forEach(log => {
@@ -790,6 +884,8 @@ export default function EvolutionChamber({
           skillWickets[nameUp] = (skillWickets[nameUp] || 0) + 1;
         }
       });
+
+      qualifyingSuccessCount = computeQualifyingSuccessCount(activePracticeQuest.requirements || {}, logsToUse);
 
       const sessionStats = {
         overs: totalOversGoal,
@@ -802,20 +898,11 @@ export default function EvolutionChamber({
         skillWickets
       };
 
-      const targetSuccessCount = getActiveQuestTarget(activePracticeQuest);
-      const maxBalls = getActiveQuestMaxBalls(activePracticeQuest);
-      const manualAttempts = manualQuestProgress.executed + manualQuestProgress.missed;
-      const manualFailures: string[] = [];
-      if (targetSuccessCount > 0 && manualQuestProgress.executed < targetSuccessCount) {
-        manualFailures.push(`Executed ${manualQuestProgress.executed} objective deliveries manually (Needs ${targetSuccessCount}).`);
-      }
-      if (maxBalls > 0 && logsToUse.length > maxBalls) {
-        manualFailures.push(`Used ${logsToUse.length} balls, exceeding the available attempt limit of ${maxBalls}.`);
-      }
-
-      const evalRes = targetSuccessCount > 0 && manualAttempts > 0
-        ? { met: manualFailures.length === 0, failures: manualFailures }
-        : evaluateQuestCompletion(activePracticeQuest, sessionStats);
+      // Evaluate quest completion based on ACTUAL LANDING OUTCOMES recorded in the
+      // session, not on the manual EXECUTED/MISSED assessment count. The manual
+      // assessments are for player tracking; the quest objective is evaluated from
+      // the delivery logs (perfect balls, close balls, dot balls, wickets, etc.).
+      const evalRes = evaluateQuestCompletion(activePracticeQuest, sessionStats, qualifyingSuccessCount);
 
       questStatusObj = {
         questId: activePracticeQuest.id,
@@ -870,6 +957,23 @@ export default function EvolutionChamber({
       drillTitle,
       summary: summDetails,
       questStatus: questStatusObj,
+      questMeta: activePracticeQuest ? {
+        questId: activePracticeQuest.id,
+        questName: activePracticeQuest.name,
+        skillName: activePracticeQuest.skillName || "LEG BREAK",
+        objective: activePracticeQuest.description,
+        target: getActiveQuestTarget(activePracticeQuest),
+        maxBalls: getActiveQuestMaxBalls(activePracticeQuest),
+        maxOvers: activePracticeQuest.maximumOvers || activePracticeQuest.overs || activePracticeQuest.oversLength || activePracticeQuest.requirements.oversMin || totalOversGoal,
+        xpReward: activePracticeQuest.xpReward,
+        masteryReward: activePracticeQuest.masteryReward,
+        completionRule: activePracticeQuest.completionRule || "TOTAL_SUCCESSES",
+        executed: manualQuestProgress.executed,
+        missed: manualQuestProgress.missed,
+        qualifyingSuccess: qualifyingSuccessCount,
+        requirements: activePracticeQuest.requirements,
+        difficulty: activePracticeQuest.difficulty,
+      } : undefined,
       pressureScenario: pressureScenarioObj,
       counts: {
         perfect: logsToUse.filter(l => l.length === "Perfect Ball").length,
@@ -1033,31 +1137,88 @@ export default function EvolutionChamber({
       {activeSubTab === "ACTIVE" ? (
         <div className="space-y-4">
           
-          {/* Active target practice quest warning panel */}
-          {activePracticeQuest && !sessionActive && !completedSessionReview && (
-            <div className="p-4 bg-purple-950/15 border-2 border-[#7B2FFF]/30 rounded-xl flex flex-col md:flex-row items-center justify-between gap-4">
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-lg bg-purple-950/35 border border-purple-500/20 flex items-center justify-center text-purple-400 shrink-0">
-                  <Award className="w-6 h-6 animate-pulse" />
-                </div>
-                <div>
-                  <span className="text-[9px] font-mono font-black text-cyan-400 uppercase tracking-widest block">DEPLOYED PRACTICE QUEST TARGET</span>
-                  <div className="flex items-center gap-2">
-                    <h4 className="text-sm font-black font-mono text-white inline-block uppercase">{activePracticeQuest.name}</h4>
-                    <span className="text-[8.5px] px-1.5 py-0.2 rounded border border-red-500/20 bg-red-950/20 text-red-400 font-mono font-black">{activePracticeQuest.difficulty}</span>
+          {/* Active target practice quest info panel — shows objective and requirements */}
+          {activePracticeQuest && !sessionActive && !completedSessionReview && (() => {
+            const successDef = getQuestSuccessDefinition(activePracticeQuest);
+            const target = successDef.target;
+            const maxAttempts = successDef.maximumAttempts;
+            const req = activePracticeQuest.requirements;
+            const completionRule = successDef.completionRule;
+            const skillName = activePracticeQuest.skillName || "LEG BREAK";
+            const maxOvers = successDef.maximumOvers;
+            const qualifyingOutcomes = successDef.qualifyingOutcomes;
+            return (
+              <div className="p-5 bg-purple-950/15 border-2 border-[#7B2FFF]/30 rounded-xl space-y-4">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-lg bg-purple-950/35 border border-purple-500/20 flex items-center justify-center text-purple-400 shrink-0">
+                      <Award className="w-6 h-6 animate-pulse" />
+                    </div>
+                    <div>
+                      <span className="text-[9px] font-mono font-black text-cyan-400 uppercase tracking-widest block">EVOLUTION QUEST</span>
+                      <h4 className="text-sm font-black font-mono text-white uppercase">{activePracticeQuest.name}</h4>
+                    </div>
                   </div>
-                  <p className="text-[11px] text-gray-400 leading-normal max-w-xl">{activePracticeQuest.description}</p>
+                  <span className="text-[8.5px] px-2 py-1 rounded border border-red-500/20 bg-red-950/20 text-red-400 font-mono font-black">{activePracticeQuest.difficulty}</span>
                 </div>
-              </div>
 
-              <button
-                onClick={handleStartSession}
-                className="w-full md:w-auto px-5 py-2 whitespace-nowrap bg-[#7B2FFF] text-white hover:bg-purple-650 font-mono font-black text-xs uppercase tracking-wider rounded transition cursor-pointer flex items-center justify-center gap-2"
-              >
-                <PlayCircle className="w-4 h-4 text-white" /> START DRILL NOW
-              </button>
-            </div>
-          )}
+                <div className="p-3 bg-black/50 rounded-xl border border-gray-800/60 space-y-2">
+                  <div className="text-[10px] font-mono text-gray-300 leading-relaxed">
+                    <span className="text-purple-400 font-bold">OBJECTIVE: </span>{activePracticeQuest.description}
+                  </div>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[9px] font-mono">
+                    <div className="p-2 bg-cyan-950/20 border border-cyan-500/20 rounded-lg">
+                      <span className="text-[7px] text-cyan-400 block uppercase font-bold">Skill</span>
+                      <strong className="text-cyan-300 block mt-0.5">{skillName}</strong>
+                    </div>
+                    <div className="p-2 bg-amber-950/20 border border-amber-500/20 rounded-lg">
+                      <span className="text-[7px] text-amber-400 block uppercase font-bold">Required</span>
+                      <strong className="text-amber-300 block mt-0.5">{target} successes</strong>
+                    </div>
+                    <div className="p-2 bg-purple-950/20 border border-purple-500/20 rounded-lg">
+                      <span className="text-[7px] text-purple-400 block uppercase font-bold">Max Attempts</span>
+                      <strong className="text-purple-300 block mt-0.5">{maxAttempts} balls</strong>
+                    </div>
+                    <div className="p-2 bg-rose-950/20 border border-rose-500/20 rounded-lg">
+                      <span className="text-[7px] text-rose-400 block uppercase font-bold">Rule</span>
+                      <strong className="text-rose-300 block mt-0.5">{completionRule.replace("_", " ")}</strong>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-[9px] font-mono">
+                    <div className="p-2 bg-yellow-950/20 border border-yellow-500/20 rounded-lg">
+                      <span className="text-[7px] text-yellow-400 block uppercase font-bold">Qualifying</span>
+                      <strong className="text-yellow-300 block mt-0.5">{qualifyingOutcomes.join(", ")}</strong>
+                    </div>
+                    <div className="p-2 bg-blue-950/20 border border-blue-500/20 rounded-lg">
+                      <span className="text-[7px] text-blue-400 block uppercase font-bold">Overs Limit</span>
+                      <strong className="text-blue-300 block mt-0.5">{maxOvers} over{maxOvers !== 1 ? "s" : ""}</strong>
+                    </div>
+                    <div className="p-2 bg-emerald-950/20 border border-emerald-500/20 rounded-lg">
+                      <span className="text-[7px] text-emerald-400 block uppercase font-bold">Rewards</span>
+                      <strong className="text-emerald-300 block mt-0.5">+{activePracticeQuest.xpReward} XP / +{activePracticeQuest.masteryReward} Mastery</strong>
+                    </div>
+                  </div>
+                  {req.runsMaxLte !== undefined && (
+                    <div className="text-[9px] font-mono text-gray-400">
+                      <span className="text-orange-400 font-bold">Special: </span>Concede no more than {req.runsMaxLte} runs
+                    </div>
+                  )}
+                  {req.noWidesOrNoBalls !== undefined && req.noWidesOrNoBalls && (
+                    <div className="text-[9px] font-mono text-gray-400">
+                      <span className="text-red-400 font-bold">Special: </span>No wides or no-balls allowed
+                    </div>
+                  )}
+                </div>
+
+                <button
+                  onClick={handleStartSession}
+                  className="w-full md:w-auto px-5 py-2 whitespace-nowrap bg-[#7B2FFF] text-white hover:bg-purple-650 font-mono font-black text-xs uppercase tracking-wider rounded transition cursor-pointer flex items-center justify-center gap-2"
+                >
+                  <PlayCircle className="w-4 h-4 text-white" /> START DRILL NOW
+                </button>
+              </div>
+            );
+          })()}
 
           {/* ACTIVE TRIAL / SETUP PANEL OR COMPLETED REVIEW */}
           {completedSessionReview ? (
@@ -1069,15 +1230,37 @@ export default function EvolutionChamber({
             >
               <div className="absolute right-0 bottom-0 w-80 h-80 bg-green-500/5 rounded-full filter blur-[150px] pointer-events-none" />
               
-              {/* QUEST EVALUATION BOX IN REVIEW */}
-              {completedSessionReview.questStatus && (
-                <div className={`p-5 rounded-xl border-2 text-left space-y-3 ${
-                  completedSessionReview.questStatus.met 
-                    ? "bg-green-950/10 border-green-500/30" 
+              {/* QUEST EVALUATION BOX IN REVIEW — answers the 4 questions */}
+              {completedSessionReview.questStatus && (() => {
+                const qs = completedSessionReview.questStatus;
+                const req = activePracticeQuest?.requirements || {};
+                const meta = completedSessionReview.questMeta;
+                const target = meta?.target ?? getActiveQuestTarget(activePracticeQuest);
+                const maxBalls = meta?.maxBalls ?? getActiveQuestMaxBalls(activePracticeQuest);
+                const perfectCount = completedSessionReview.counts.perfect;
+                const closeCount = completedSessionReview.counts.close;
+                const closeOrBetter = perfectCount + closeCount;
+                const dotCount = completedSessionReview.counts.dots;
+                const wicketCount = completedSessionReview.counts.wickets;
+                const totalBalls = completedSessionReview.counts.totalDeliveries;
+                const executedCount = meta?.executed ?? activePracticeQuest?.executionProgress ?? 0;
+                const missedCount = meta?.missed ?? activePracticeQuest?.executionMisses ?? 0;
+                const qualifyingCount = meta?.qualifyingSuccess ?? computeQualifyingSuccessCount(
+                  meta?.requirements ?? req,
+                  completedSessionReview.balls || []
+                );
+                const skillLabel = meta?.skillName || activePracticeQuest?.skillName || "LEG BREAK";
+                const objectiveText = meta?.objective || activePracticeQuest?.description || "Complete the quest objective.";
+                const xpReward = meta?.xpReward ?? activePracticeQuest?.xpReward ?? 0;
+                const masteryReward = meta?.masteryReward ?? activePracticeQuest?.masteryReward ?? 0;
+                return (
+                <div className={`p-5 rounded-xl border-2 text-left space-y-4 ${
+                  qs.met
+                    ? "bg-green-950/10 border-green-500/30"
                     : "bg-red-950/10 border-red-500/30"
                 }`}>
                   <div className="flex items-center gap-2">
-                    {completedSessionReview.questStatus.met ? (
+                    {qs.met ? (
                       <ShieldCheck className="w-6 h-6 text-green-400 shrink-0" />
                     ) : (
                       <XCircle className="w-6 h-6 text-red-500 shrink-0" />
@@ -1085,32 +1268,69 @@ export default function EvolutionChamber({
                     <div>
                       <span className="text-[9px] font-mono font-extrabold text-gray-400 uppercase tracking-widest">PRACTICE QUEST VERDICT</span>
                       <h4 className="text-sm font-black font-mono uppercase text-white mt-0.5">
-                        {completedSessionReview.questStatus.questName}: {completedSessionReview.questStatus.met ? "SUCCESFULLY CLEARED!" : "ATTEMPT DEFEATED"}
+                        {qs.questName}: {qs.met ? "SUCCESFULLY CLEARED!" : "ATTEMPT DEFEATED"}
                       </h4>
                     </div>
                   </div>
 
-                  {completedSessionReview.questStatus.met ? (
-                    <p className="text-xs text-green-405 text-green-400 leading-relaxed font-sans">
-                      SYSTEM COMPLIANCE PASSED! The kinetic vectors of {activePracticeQuest?.skillName} have synchronized. Dynamic title milestones verified, and custom Mastery XP has spiked by <strong className="text-white">+{activePracticeQuest?.masteryReward} Mastery XP</strong>!
-                    </p>
-                  ) : (
-                    <div className="space-y-2">
-                      <p className="text-xs text-red-400 font-sans">
-                        CRITICAL LIMITERS DETECTED inside checkout parameters. Review the unfulfilled goals of your active practice quest:
-                      </p>
-                      <ul className="list-disc pl-5 text-[10.5px] font-mono text-gray-400 space-y-1">
-                        {completedSessionReview.questStatus.failures.map((f, i) => (
-                          <li key={i} className="text-red-300">{f}</li>
-                        ))}
-                      </ul>
-                      <p className="text-[10px] text-gray-500 font-mono pt-1">
-                        Don't lose focus spinner! You are allowed to retry this practice quest indefinitely until you achieve pristine execution.
-                      </p>
+                  {/* Q1: WHAT WAS I TRYING TO DO? */}
+                  <div className="p-3 bg-black/50 rounded-lg border border-gray-800/60 space-y-1">
+                    <span className="text-[8px] text-purple-400 font-mono font-black uppercase tracking-wider">Q1: OBJECTIVE</span>
+                    <p className="text-[10px] text-gray-300 font-mono leading-relaxed">{objectiveText}</p>
+                    <div className="flex flex-wrap gap-2 mt-1 text-[9px] font-mono">
+                      <span className="px-2 py-0.5 rounded bg-cyan-950/30 border border-cyan-500/20 text-cyan-300">Skill: {skillLabel}</span>
+                      <span className="px-2 py-0.5 rounded bg-amber-950/30 border border-amber-500/20 text-amber-300">Required: {target}</span>
+                      <span className="px-2 py-0.5 rounded bg-purple-950/30 border border-purple-500/20 text-purple-300">Max: {maxBalls} balls</span>
                     </div>
-                  )}
+                  </div>
+
+                  {/* Q2: WHAT DID I ACTUALLY DO? */}
+                  <div className="p-3 bg-black/50 rounded-lg border border-gray-800/60 space-y-2">
+                    <span className="text-[8px] text-cyan-400 font-mono font-black uppercase tracking-wider">Q2: ACTUAL PERFORMANCE</span>
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[9px] font-mono text-center">
+                      <div className="p-2 bg-yellow-950/10 border border-yellow-500/20 rounded"><span className="text-yellow-500 block">PERFECT</span><strong className="text-yellow-300 text-sm block">{perfectCount}</strong></div>
+                      <div className="p-2 bg-emerald-950/10 border border-emerald-500/20 rounded"><span className="text-emerald-400 block">CLOSE</span><strong className="text-emerald-300 text-sm block">{closeCount}</strong></div>
+                      <div className="p-2 bg-blue-950/10 border border-blue-500/20 rounded"><span className="text-blue-400 block">JUST SHORT</span><strong className="text-blue-300 text-sm block">{completedSessionReview.counts.justShort}</strong></div>
+                      <div className="p-2 bg-orange-950/10 border border-orange-500/20 rounded"><span className="text-orange-400 block">SHORT</span><strong className="text-orange-300 text-sm block">{completedSessionReview.counts.short}</strong></div>
+                      <div className="p-2 bg-rose-950/10 border border-rose-500/20 rounded"><span className="text-rose-400 block">FULL TOSS</span><strong className="text-rose-300 text-sm block">{completedSessionReview.counts.fullToss}</strong></div>
+                      <div className="p-2 bg-cyan-950/10 border border-cyan-500/20 rounded"><span className="text-cyan-400 block">EXECUTED</span><strong className="text-cyan-300 text-sm block">{executedCount}</strong></div>
+                      <div className="p-2 bg-red-950/10 border border-red-500/20 rounded"><span className="text-red-400 block">MISSED</span><strong className="text-red-300 text-sm block">{missedCount}</strong></div>
+                      <div className="p-2 bg-gray-950/10 border border-gray-500/20 rounded"><span className="text-gray-400 block">TOTAL</span><strong className="text-gray-300 text-sm block">{totalBalls}</strong></div>
+                    </div>
+                  </div>
+
+                  {/* Q3: DID I COMPLETE THE OBJECTIVE? */}
+                  <div className="p-3 bg-black/50 rounded-lg border border-gray-800/60 space-y-2">
+                    <span className="text-[8px] text-amber-400 font-mono font-black uppercase tracking-wider">Q3: OBJECTIVE RESULT</span>
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] text-gray-300 font-mono">Required: <strong className="text-white">{target}</strong> | Achieved: <strong className={qs.met ? "text-green-400" : "text-red-400"}>{qualifyingCount}</strong></span>
+                      <span className={`text-xs font-black uppercase ${qs.met ? "text-green-400" : "text-red-400"}`}>{qs.met ? "SUCCESS" : "FAILED"}</span>
+                    </div>
+                    <div className="h-2 bg-black border border-gray-800 rounded-full overflow-hidden">
+                      <div className={`h-full rounded-full transition-all ${qs.met ? "bg-green-500" : "bg-red-500"}`} style={{ width: `${Math.min(100, (qualifyingCount / Math.max(1, target)) * 100)}%` }} />
+                    </div>
+                    {!qs.met && qs.failures.length > 0 && (
+                      <ul className="list-disc pl-4 text-[9px] font-mono text-red-300 space-y-0.5">
+                        {qs.failures.map((f, i) => <li key={i}>{f}</li>)}
+                      </ul>
+                    )}
+                  </div>
+
+                  {/* Q4: WHAT DID I EARN? */}
+                  <div className="p-3 bg-black/50 rounded-lg border border-gray-800/60 space-y-1">
+                    <span className="text-[8px] text-emerald-400 font-mono font-black uppercase tracking-wider">Q4: REWARDS</span>
+                    {qs.met ? (
+                      <div className="flex flex-wrap gap-3 text-[10px] font-mono">
+                        <span className="text-cyan-300">XP: <strong className="text-white">+{xpReward}</strong></span>
+                        <span className="text-purple-300">Mastery: <strong className="text-white">+{masteryReward}</strong></span>
+                      </div>
+                    ) : (
+                      <p className="text-[10px] text-gray-500 font-mono">No rewards earned — objective not achieved. Retry to earn the reward.</p>
+                    )}
+                  </div>
                 </div>
-              )}
+                );
+              })()}
 
               {/* PRESSURE CHALLENGE BOX IN REVIEW */}
               {completedSessionReview.pressureScenario && (
@@ -2067,7 +2287,8 @@ export default function EvolutionChamber({
                             </div>
                             <div className="grid grid-cols-2 gap-2 text-[9px] pt-1 border-t border-gray-900">
                               <span>Attempts: <strong className="text-white">{manualQuestProgress.executed + manualQuestProgress.missed} / {getActiveQuestMaxBalls(activePracticeQuest)}</strong></span>
-                              <span>Remaining: <strong className="text-white">{Math.max(0, getActiveQuestTarget(activePracticeQuest) - manualQuestProgress.executed)} successes</strong></span>
+                              <span>Qualifying: <strong className="text-white">{computeQualifyingSuccessCount(activePracticeQuest?.requirements || {}, deliveryLogs)} / {getActiveQuestTarget(activePracticeQuest)}</strong></span>
+                              <span>Remaining: <strong className="text-white">{Math.max(0, getActiveQuestTarget(activePracticeQuest) - computeQualifyingSuccessCount(activePracticeQuest?.requirements || {}, deliveryLogs))} successes</strong></span>
                               <span>Window: <strong className="text-white">Over {Math.min(Math.ceil(Math.max(1, manualQuestProgress.executed + manualQuestProgress.missed) / 6), Number(activePracticeQuest.maximumOvers || activePracticeQuest.overs || activePracticeQuest.oversLength || activePracticeQuest.requirements.oversMin || totalOversGoal))} / {activePracticeQuest.maximumOvers || activePracticeQuest.overs || activePracticeQuest.oversLength || activePracticeQuest.requirements.oversMin || totalOversGoal}</strong></span>
                               <span>Ball: <strong className="text-white">{((manualQuestProgress.executed + manualQuestProgress.missed) % 6) + 1} / 6</strong></span>
                             </div>
@@ -2179,10 +2400,11 @@ export default function EvolutionChamber({
                   const target = getActiveQuestTarget(activePracticeQuest);
                   const maxAttempts = getActiveQuestMaxBalls(activePracticeQuest);
                   const currentAttempts = manualQuestProgress.executed + manualQuestProgress.missed;
+                  const qualifyingDone = computeQualifyingSuccessCount(activePracticeQuest?.requirements || {}, deliveryLogs);
                   const awaitingBall = deliveryLogs[lastAssessedQuestDelivery];
                   const awaitingOver = awaitingBall?.over || currentOverNumber;
                   const awaitingBallNum = awaitingBall?.ballNum || (legalBallsInCurrentOver + 1);
-                  const completionPct = target > 0 ? Math.min(100, Math.round((manualQuestProgress.executed / target) * 100)) : 0;
+                  const completionPct = target > 0 ? Math.min(100, Math.round((qualifyingDone / target) * 100)) : 0;
                   return (
                     <motion.div
                       initial={{ opacity: 0, y: 10 }}
@@ -2205,26 +2427,27 @@ export default function EvolutionChamber({
                         <div className="flex items-center justify-between text-[10px] font-mono">
                           <span className="text-gray-400">Skill: <strong className="text-purple-300 uppercase">{awaitingBall?.skillName || activeSkill?.name}</strong></span>
                           <span className="text-gray-400">Pitch: <strong className="text-yellow-400 uppercase">{awaitingBall?.length || selectedLengthMetric}</strong></span>
+                          <span className={`text-gray-400 ${isQualifyingDelivery(activePracticeQuest?.requirements || {}, awaitingBall) ? "text-green-400" : "text-red-400"}`}>Qualifies: <strong className={`${isQualifyingDelivery(activePracticeQuest?.requirements || {}, awaitingBall) ? "text-green-400" : "text-red-400"}`}>{isQualifyingDelivery(activePracticeQuest?.requirements || {}, awaitingBall) ? "YES" : "NO"}</strong></span>
                         </div>
                       </div>
 
                       {/* Progress display */}
                       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center font-mono">
                         <div className="p-2 bg-cyan-950/20 border border-cyan-500/20 rounded-lg">
-                          <span className="text-[7px] text-cyan-400 block uppercase font-bold">Successful</span>
-                          <span className="text-sm font-black text-cyan-300">{manualQuestProgress.executed} / {target}</span>
+                          <span className="text-[7px] text-cyan-400 block uppercase font-bold">Qualifying</span>
+                          <span className="text-sm font-black text-cyan-300">{qualifyingDone} / {target}</span>
                         </div>
                         <div className="p-2 bg-red-950/20 border border-red-500/20 rounded-lg">
-                          <span className="text-[7px] text-red-400 block uppercase font-bold">Missed</span>
-                          <span className="text-sm font-black text-red-300">{manualQuestProgress.missed}</span>
+                          <span className="text-[7px] text-red-400 block uppercase font-bold">Executed</span>
+                          <span className="text-sm font-black text-red-300">{manualQuestProgress.executed}</span>
                         </div>
                         <div className="p-2 bg-amber-950/20 border border-amber-500/20 rounded-lg">
-                          <span className="text-[7px] text-amber-400 block uppercase font-bold">Attempts</span>
-                          <span className="text-sm font-black text-amber-300">{currentAttempts} / {maxAttempts}</span>
+                          <span className="text-[7px] text-amber-400 block uppercase font-bold">Missed</span>
+                          <span className="text-sm font-black text-amber-300">{manualQuestProgress.missed}</span>
                         </div>
                         <div className="p-2 bg-purple-950/20 border border-purple-500/20 rounded-lg">
                           <span className="text-[7px] text-purple-400 block uppercase font-bold">Remaining</span>
-                          <span className="text-sm font-black text-purple-300">{Math.max(0, target - manualQuestProgress.executed)}</span>
+                          <span className="text-sm font-black text-purple-300">{Math.max(0, target - qualifyingDone)}</span>
                         </div>
                       </div>
 
