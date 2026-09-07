@@ -1,9 +1,12 @@
-import { PracticeQuest } from "../types";
+﻿import { PracticeQuest } from "../types";
 import { INITIAL_PRACTICE_QUESTS } from "../App";
 import {
   getQuestSuccessTarget,
+  getLegacyQualifyingCondition,
   normalizeQuestDefinition,
-  validateQuestDefinition
+  validateQuestDefinition,
+  parseQualifyingConditionPhrase,
+  parseFailureConditionPhrase
 } from "./questCore";
 
 export interface CustomQuest extends PracticeQuest {
@@ -261,6 +264,10 @@ export function analyzeAndGenerateQuest(questData: {
   mode?: string;
   toBeExecuted?: number | string;
   totalBalls?: number | string;
+  requiredSuccesses?: number | string;
+  successCondition?: string;
+  earlyCompletion?: boolean | string;
+  failureCondition?: string;
 }): CustomQuest {
   const difficulty = questData.difficulty;
   const overs = questData.overs;
@@ -385,31 +392,84 @@ export function analyzeAndGenerateQuest(questData: {
     overs: overs
   };
 
-  // Canonical quest window + success requirement (NEW field format).
-  // Explicit `toBeExecuted` / `totalBalls` win; otherwise derive a safe
-  // consistent value from the parsed objective requirements. Never overwrite
-  // an explicit value with an inferred fallback.
-  let toBeExecuted = 0;
-  if (questData.toBeExecuted !== undefined && questData.toBeExecuted !== "") {
-    toBeExecuted = Number(questData.toBeExecuted);
-  } else if (Number(parsedReqs.targetSuccessCount ?? 0) > 0) {
-    toBeExecuted = Number(parsedReqs.targetSuccessCount);
-  } else {
-    toBeExecuted = Number(
-      parsedReqs.perfectBallsNeeded || parsedReqs.closeOrBetterNeeded ||
-      parsedReqs.dotBallsNeeded || parsedReqs.wicketsNeeded ||
-      parsedReqs.consecutivePerfectBalls || 0
-    );
+  // ------------------------------------------------------------------
+  // Canonical structured quest logic (AUTHORITATIVE). Explicit structured
+  // fields win over any inferred value. If an explicit field is absent, the
+  // compiler falls back to a deterministic legacy mapping (never text.).)
+  // ------------------------------------------------------------------
+  const parseNum = (v: number | string | undefined): number => {
+    if (v === undefined || v === "") return 0;
+    const n = Number(v);
+    return isNaN(n) || n < 0 ? 0 : n;
+  };
+
+  // "Absent" vs "explicitly supplied 0" must be distinguished: an explicitly
+  // supplied 0 is a malformed requirement the validator must reject — it may
+  // NEVER be silently replaced by a derived value (e.g. Overs × 6).
+  const parseExplicit = (v: number | string | undefined): number => {
+    if (v === undefined || v === "") return -1; // -1 = field absent
+    const n = Number(v);
+    return isNaN(n) ? -1 : Math.max(0, n);
+  };
+
+  const explicitExecutionRequired = parseNum(questData.toBeExecuted);
+  const explicitTotalBalls = parseExplicit(questData.totalBalls);
+  const explicitRequiredSuccesses = parseExplicit(questData.requiredSuccesses);
+
+  // Legacy keys extracted deterministically from the objectives script (they
+  // are explicit-ish numbers, not free-text guessing).
+  const legacyTarget = Number(
+    parsedReqs.targetSuccessCount ||
+    parsedReqs.perfectBallsNeeded ||
+    parsedReqs.closeOrBetterNeeded ||
+    parsedReqs.dotBallsNeeded ||
+    parsedReqs.wicketsNeeded ||
+    parsedReqs.consecutivePerfectBalls ||
+    0
+  );
+
+  // Success condition: explicit phrase wins; legacy deterministic mapping second.
+  const successCondition =
+    parseQualifyingConditionPhrase(questData.successCondition) ||
+    getLegacyQualifyingCondition(parsedReqs);
+  const failureCondition =
+    parseFailureConditionPhrase(questData.failureCondition) || "WINDOW_EXHAUSTED";
+
+  let earlyCompletion = true;
+  if (questData.earlyCompletion !== undefined) {
+    if (typeof questData.earlyCompletion === "boolean") {
+      earlyCompletion = questData.earlyCompletion;
+    } else {
+      const t = String(questData.earlyCompletion).trim().toLowerCase();
+      earlyCompletion = !(t === "no" || t === "false" || t === "0" || t === "disabled");
+    }
   }
-  if (isNaN(toBeExecuted) || toBeExecuted < 0) toBeExecuted = 0;
+
+  // The execution requirement (To Be Executed) is the number of deliveries
+  // that must be assessed via the EXECUTED/MISSED mechanism. It is NOT the
+  // success count. If absent (legacy) no execution gate is enforced (0).
+  const executionRequired = explicitExecutionRequired;
+
+  // Success target: explicit Required Successes wins; legacy target fallback.
+  // An explicitly supplied 0 (or negative) stays 0 so validation rejects it.
+  let successTarget = 0;
+  if (explicitRequiredSuccesses > 0) {
+    successTarget = explicitRequiredSuccesses;
+  } else if (explicitRequiredSuccesses === 0) {
+    successTarget = 0; // explicitly malformed — the validator must reject it
+  } else {
+    successTarget = legacyTarget > 0 ? legacyTarget : explicitExecutionRequired;
+  }
 
   let totalBalls = 0;
-  if (questData.totalBalls !== undefined && questData.totalBalls !== "") {
-    totalBalls = Number(questData.totalBalls);
+  if (explicitTotalBalls > 0) {
+    totalBalls = explicitTotalBalls; // Explicit Total Balls is authoritative — NEVER replaced with Overs * 6
+  } else if (explicitTotalBalls === 0) {
+    totalBalls = 0; // explicitly malformed — the validator must reject it
   } else if (typeof overs === "number" && overs > 0) {
     totalBalls = overs * 6;
-  } else if (toBeExecuted > 0) {
-    totalBalls = toBeExecuted * 3;
+  } else if (successTarget > 0) {
+    totalBalls = successTarget * 3;
   } else {
     totalBalls = 6;
   }
@@ -418,26 +478,39 @@ export function analyzeAndGenerateQuest(questData: {
   }
 
   const maxOvers = typeof overs === "number" && overs > 0 ? overs : Math.max(1, Math.ceil(totalBalls / 6));
-  const qualCount = Object.keys(parsedReqs).filter(
+  const validReqKeys = Object.keys(parsedReqs).filter(
     (k) => k !== "oversMin" && k !== "noWidesOrNoBalls" &&
       parsedReqs[k] !== undefined && parsedReqs[k] !== false && Number(parsedReqs[k] ?? 0) > 0
-  ).length;
+  );
+  const qualCount = validReqKeys.length;
   const completionRule: "TOTAL_SUCCESSES" | "PER_OVER" | "MULTI_CONDITION" =
     qualCount > 1 ? "MULTI_CONDITION" : "TOTAL_SUCCESSES";
 
   const canonical: CustomQuest = {
     ...result,
-    targetSuccessCount: toBeExecuted,
+    targetSuccessCount: successTarget,
     maxBalls: totalBalls,
     maximumAttempts: totalBalls,
     maximumOvers: maxOvers,
     oversLength: maxOvers,
     completionRule,
+    totalBalls,
+    executionRequired,
+    successTarget,
+    qualifyingCondition: successCondition ?? undefined,
+    earlyCompletion,
+    failureCondition,
     requirements: {
       ...result.requirements,
       oversMin: maxOvers !== 0 ? maxOvers : result.requirements.oversMin,
-      targetSuccessCount: toBeExecuted,
-      maxBalls: totalBalls
+      targetSuccessCount: successTarget,
+      maxBalls: totalBalls,
+      totalBalls,
+      executionRequired,
+      successTarget,
+      qualifyingCondition: successCondition ?? undefined,
+      earlyCompletion,
+      failureCondition
     }
   };
 
@@ -1545,6 +1618,10 @@ export class QuestDatabaseManager {
       let difficulty = "";
       let toBeExecuted = "";
       let totalBalls = "";
+      let requiredSuccesses = "";
+      let successCondition = "";
+      let earlyCompletion = "";
+      let failureCondition = "";
 
       // Parse fields
       blockLines.forEach((rawLine) => {
@@ -1591,6 +1668,26 @@ export class QuestDatabaseManager {
             case "totalballs":
             case "total_balls":
               totalBalls = val;
+              break;
+            case "required successes":
+            case "requiredsuccesses":
+            case "required_successes":
+              requiredSuccesses = val;
+              break;
+            case "success condition":
+            case "successcondition":
+            case "success_condition":
+              successCondition = val;
+              break;
+            case "early completion":
+            case "earlycompletion":
+            case "early_completion":
+              earlyCompletion = val;
+              break;
+            case "failure condition":
+            case "failurecondition":
+            case "failure_condition":
+              failureCondition = val;
               break;
           }
         } else {
@@ -1695,7 +1792,11 @@ export class QuestDatabaseManager {
           objectivesText: description, // Default objectives to description
           mode: finalMode,
           toBeExecuted: toBeExecuted !== "" ? toBeExecuted : undefined,
-          totalBalls: totalBalls !== "" ? totalBalls : undefined
+          totalBalls: totalBalls !== "" ? totalBalls : undefined,
+          requiredSuccesses: requiredSuccesses !== "" ? requiredSuccesses : undefined,
+          successCondition: successCondition !== "" ? successCondition : undefined,
+          earlyCompletion: earlyCompletion !== "" ? earlyCompletion : undefined,
+          failureCondition: failureCondition !== "" ? failureCondition : undefined
         });
         validationErrors = validateQuestDefinition(compiled);
         validationOk = validationErrors.length === 0;
@@ -1725,6 +1826,10 @@ export class QuestDatabaseManager {
         objectivesText: description, // Default objectives to description
         toBeExecuted: toBeExecuted !== "" ? toBeExecuted : undefined,
         totalBalls: totalBalls !== "" ? totalBalls : undefined,
+        requiredSuccesses: requiredSuccesses !== "" ? requiredSuccesses : undefined,
+        successCondition: successCondition !== "" ? successCondition : undefined,
+        earlyCompletion: earlyCompletion !== "" ? earlyCompletion : undefined,
+        failureCondition: failureCondition !== "" ? failureCondition : undefined,
         rawBlock: rawBlockText
       });
     });
@@ -1749,7 +1854,11 @@ export class QuestDatabaseManager {
         objectivesText: qData.objectivesText,
         mode: qData.mode,
         toBeExecuted: qData.toBeExecuted,
-        totalBalls: qData.totalBalls
+        totalBalls: qData.totalBalls,
+        requiredSuccesses: qData.requiredSuccesses,
+        successCondition: qData.successCondition,
+        earlyCompletion: qData.earlyCompletion,
+        failureCondition: qData.failureCondition
       });
       questsAdded.push(newQuest);
     });

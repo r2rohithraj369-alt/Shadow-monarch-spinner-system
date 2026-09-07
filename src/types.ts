@@ -242,6 +242,38 @@ export interface AIAnalysisResponse {
   forecastReason: string[];
 }
 
+export type QuestQualifyingCondition =
+  | "PERFECT"
+  | "CLOSE"
+  | "PERFECT_OR_CLOSE"
+  | "DOT_BALL"
+  | "WICKET";
+
+export type QuestFailureCondition =
+  | "WINDOW_EXHAUSTED"
+  | "NO_MISSES_ALLOWED";
+
+export interface QuestRequirements {
+  oversMin?: number;
+  targetSuccessCount?: number;
+  maxBalls?: number;
+  perfectBallsNeeded?: number;
+  closeOrBetterNeeded?: number;
+  wicketsNeeded?: number;
+  runsMaxLte?: number;
+  dotBallsNeeded?: number;
+  skillsSpecificWickets?: Record<string, number>;
+  noWidesOrNoBalls?: boolean;
+  consecutivePerfectBalls?: number;
+  // ---- Explicit structured quest logic (authoritative) ----
+  totalBalls?: number;
+  executionRequired?: number;
+  successTarget?: number;
+  qualifyingCondition?: QuestQualifyingCondition;
+  earlyCompletion?: boolean;
+  failureCondition?: QuestFailureCondition;
+}
+
 export interface PracticeQuest {
   id: string;
   skillId: string;
@@ -252,19 +284,7 @@ export interface PracticeQuest {
   xpReward: number;
   masteryReward: number;
   type: "CHAMBER_NET" | "CHAMBER_MATCH_SIM" | "DUNGEON_MATCH";
-  requirements: {
-    oversMin?: number;
-    targetSuccessCount?: number;
-    maxBalls?: number;
-    perfectBallsNeeded?: number;
-    closeOrBetterNeeded?: number;
-    wicketsNeeded?: number;
-    runsMaxLte?: number;
-    dotBallsNeeded?: number;
-    skillsSpecificWickets?: Record<string, number>;
-    noWidesOrNoBalls?: boolean;
-    consecutivePerfectBalls?: number;
-  };
+  requirements: QuestRequirements;
   completed: boolean;
   attemptsCount: number;
   lastAttemptStatus: "NONE" | "SUCCESS" | "FAILED";
@@ -277,6 +297,13 @@ export interface PracticeQuest {
   executionHistory?: Array<{ ball: number; over: number; result: "EXECUTED" | "MISSED"; timestamp: string }>;
   targetSuccessCount?: number;
   maxBalls?: number;
+  // ---- Explicit structured quest logic (authoritative mirrors) ----
+  totalBalls?: number;
+  executionRequired?: number;
+  successTarget?: number;
+  qualifyingCondition?: QuestQualifyingCondition;
+  earlyCompletion?: boolean;
+  failureCondition?: QuestFailureCondition;
   objectiveType?: string;
   objectiveDescription?: string;
   completionRule?: "TOTAL_SUCCESSES" | "PER_OVER" | "MULTI_CONDITION";

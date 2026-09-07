@@ -64,6 +64,7 @@ interface LoggedSession {
     questName: string;
     met: boolean;
     failures: string[];
+    reason?: string;
   };
   // Quest snapshot captured at session conclusion. Authoritative copy of the
   // quest objective, limits and manual execution assessment so the final
@@ -82,6 +83,13 @@ interface LoggedSession {
     executed: number;
     missed: number;
     qualifyingSuccess: number;
+    // Explicit structured quest logic snapshot (historical reports must never
+    // change if the quest definition is edited later).
+    executionRequired: number;
+    successTarget: number;
+    qualifyingCondition: string | null;
+    earlyCompletion: boolean;
+    failureCondition: string;
     requirements?: Record<string, any>;
     difficulty: string;
   };
@@ -204,7 +212,12 @@ import { QuestDatabaseManager } from "../utils/questDatabaseManager";
 import {
   computeQualifyingSuccessCount,
   getQuestSuccessDefinition,
-  isQualifyingDelivery
+  isQualifyingDelivery,
+  getCanonicalQuestRequirements,
+  getQuestInstructionLines,
+  getQuestExecutionRequirement,
+  evaluateFinalQuestResult,
+  evaluateLiveQuestState
 } from "../utils/questCore";
 
 export function generatePressureScenario(overs: number, difficulty: "EASY" | "MEDIUM" | "DIFFICULT" | "EXTREME"): PressureScenarioData {
@@ -504,12 +517,12 @@ export default function EvolutionChamber({
 
   useEffect(() => {
     if (!activePracticeQuest) return;
-    setManualQuestProgress({
-      executed: activePracticeQuest.executionProgress || 0,
-      missed: activePracticeQuest.executionMisses || 0,
-    });
-    // Delivery logs are session-local; persisted history is the cross-session
-    // audit trail and must not block the first new delivery after a reload.
+    // A NEW quest id means a NEW session context. Transient runtime state must
+    // NEVER inherit another quest's execution assessments or landing logs —
+    // otherwise a previous attempt (e.g. Executed = 11, Missed = 1) leaks into
+    // the new quest and shows impossible values like "Executed 11/12".
+    setDeliveryLogs([]);
+    setManualQuestProgress({ executed: 0, missed: 0 });
     setLastAssessedQuestDelivery(0);
     setExecutionResult(activePracticeQuest.completed ? "COMPLETED" : activePracticeQuest.lastAttemptStatus === "FAILED" ? "FAILED" : "ACTIVE");
     completionReportedRef.current = activePracticeQuest.completed || activePracticeQuest.lastAttemptStatus === "FAILED";
@@ -535,15 +548,23 @@ export default function EvolutionChamber({
       setRunsOffBat(0);
       setExtrasRunsConceded(0);
       setWicketDismissal("");
-      setManualQuestProgress({
-        executed: activePracticeQuest?.executionProgress || 0,
-        missed: activePracticeQuest?.executionMisses || 0,
-      });
+      // FRESH TRANSIENT SESSION STATE — a new session ALWAYS starts at zero.
+      // Values from a previous quest attempt (executed / missed / qualifying)
+      // must never carry into a new session.
+      setManualQuestProgress({ executed: 0, missed: 0 });
       setLastAssessedQuestDelivery(0);
       setExecutionResult("ACTIVE");
       completionReportedRef.current = false;
       setSessionActive(true);
       setCompletedSessionReview(null);
+
+      // When a structured quest is active its attempt window is authoritative.
+      if (activePracticeQuest && activePracticeQuest.type === "CHAMBER_NET") {
+        const canon = getCanonicalQuestRequirements(activePracticeQuest);
+        if (canon.successTarget > 0 && canon.totalBalls > 0) {
+          setTotalOversGoal(Math.max(1, Math.ceil(canon.totalBalls / 6)));
+        }
+      }
 
       if (isPressureMode) {
         if (preparedScenario) {
@@ -596,20 +617,32 @@ export default function EvolutionChamber({
 
   const getActiveQuestTarget = (quest: PracticeQuest | null) => {
     if (!quest) return 0;
-    return quest.targetSuccessCount ||
-      quest.requirements.targetSuccessCount ||
-      quest.requirements.perfectBallsNeeded ||
-      quest.requirements.closeOrBetterNeeded ||
-      quest.requirements.dotBallsNeeded ||
-      quest.requirements.wicketsNeeded ||
-      0;
+    return getCanonicalQuestRequirements(quest)?.successTarget || 0;
   };
 
   const getActiveQuestMaxBalls = (quest: PracticeQuest | null) => {
     if (!quest) return totalOversGoal * 6;
-    return quest.maximumAttempts || quest.maxBalls ||
-      quest.requirements.maxBalls ||
-      Number(quest.overs || quest.oversLength || quest.requirements.oversMin || totalOversGoal) * 6;
+    const canon = getCanonicalQuestRequirements(quest);
+    // Explicit Total Balls is authoritative. If none was ever defined (legacy
+    // match-sim/dungeon) fall back to the overs window like before.
+    if (canon.totalBalls > 0) return canon.totalBalls;
+    return Number(quest.overs || quest.oversLength || quest.requirements.oversMin || totalOversGoal) * 6;
+  };
+
+  const getActiveQuestExecutionRequired = (quest: PracticeQuest | null) => {
+    if (!quest) return 0;
+    return getQuestExecutionRequirement(quest.requirements || {});
+  };
+
+  const getActiveQuestEarlyCompletion = (quest: PracticeQuest | null) => {
+    if (!quest) return true;
+    return getCanonicalQuestRequirements(quest)?.earlyCompletion !== false;
+  };
+
+  const isStructuredWindowQuest = (quest: PracticeQuest | null) => {
+    if (!quest || quest.type !== "CHAMBER_NET") return false;
+    const canon = getCanonicalQuestRequirements(quest);
+    return canon.totalBalls > 0 && canon.successTarget > 0 && canon.qualifyingCondition !== null;
   };
 
   const markQuestExecution = (result: "EXECUTED" | "MISSED") => {
@@ -626,14 +659,42 @@ export default function EvolutionChamber({
     ];
     setManualQuestProgress(nextProgress);
     setLastAssessedQuestDelivery(deliveryLogs.length);
-    // Only update manual assessment progress here. Final quest completion is
-    // determined in handleConcludeSession using the actual landing outcomes.
+
+    // Live quest evaluation after EVERY assessment. Qualification is always
+    // derived from actual landing outcomes; the EXECUTED/MISSED assessment only
+    // updates the execution requirement. This is where WINDOW_EXHAUSTED
+    // failure is authoritatively decided (the last ball of the window has now
+    // been assessed, so the execution counts are final).
+    // Structured window quests only — legacy multi-condition quests are
+    // evaluated at window wrap by their own evaluator.
     onUpdatePracticeQuestProgress(activePracticeQuest.id, {
       executionProgress: nextProgress.executed,
       executionMisses: nextProgress.missed,
       executionHistory: history,
       lastAttemptStatus: "NONE",
     });
+
+    if (isStructuredWindowQuest(activePracticeQuest)) {
+      const livePerf = {
+        totalDeliveries: deliveryLogs.length,
+        qualifyingSuccess: computeQualifyingSuccessCount(activePracticeQuest.requirements || {}, deliveryLogs),
+        executed: nextProgress.executed,
+        missed: nextProgress.missed,
+      };
+      const live = evaluateLiveQuestState(activePracticeQuest, livePerf);
+
+      // POST-ASSESSMENT LIVE EVALUATION (authoritative structured logic).
+      if (live.status === "SUCCESS") {
+        setExecutionResult("COMPLETED");
+        handleConcludeSession(deliveryLogs);
+        return;
+      }
+      if (live.status === "FAILED") {
+        setExecutionResult("FAILED");
+        handleConcludeSession(deliveryLogs);
+        return;
+      }
+    }
   };
 
   const handleLogDelivery = () => {
@@ -717,29 +778,29 @@ export default function EvolutionChamber({
     const updatedLogs = [...deliveryLogs, newDelivery];
     setDeliveryLogs(updatedLogs);
 
-    // EARLY SUCCESS / IMPOSSIBLE-STATE handling.
-    // When the objective is already satisfied (e.g. 5/5 reached on ball 9) the
-    // quest concludes early — no meaningless extra deliveries are required.
-    // When success is mathematically impossible with the remaining attempts, the
-    // quest also concludes (as FAILED) instead of staying active indefinitely.
-    // This only runs when the current delivery is NOT the session-ending ball
-    // (which is handled by the normal over-wrap conclude below to avoid double
-    // reporting).
+    // EARLY SUCCESS / IMPOSSIBLE-STATE handling — derived exclusively from the
+    // canonical structured quest requirements via evaluateLiveQuestState.
+    // Window-exhaustion failures are NOT applied here: the final delivery of
+    // the window may still be awaiting its EXECUTED/MISSED assessment, and the
+    // assessment step (markQuestExecution) performs the authoritative
+    // window-exhausted evaluation with the final execution counts.
     const willWrap = !isExtra && (legalBallsInCurrentOver + 1) >= 6 && (currentOverNumber + 1) > totalOversGoal;
-    if (!willWrap && activePracticeQuest && sessionActive) {
-      const qTarget = getActiveQuestTarget(activePracticeQuest) || 0;
-      const qAchieved = computeQualifyingSuccessCount(activePracticeQuest.requirements || {}, updatedLogs);
-      const qMaxAttempts = getActiveQuestMaxBalls(activePracticeQuest) || totalOversGoal * 6;
-      const qUsed = updatedLogs.length;
-      const qRemaining = Math.max(0, qMaxAttempts - qUsed);
-      if (qTarget > 0 && qAchieved >= qTarget) {
+    if (!willWrap && activePracticeQuest && sessionActive && isStructuredWindowQuest(activePracticeQuest)) {
+      const livePerf = {
+        totalDeliveries: updatedLogs.length,
+        qualifyingSuccess: computeQualifyingSuccessCount(activePracticeQuest.requirements || {}, updatedLogs),
+        executed: manualQuestProgress.executed,
+        missed: manualQuestProgress.missed,
+      };
+      const live = evaluateLiveQuestState(activePracticeQuest, livePerf);
+      if (live.status === "SUCCESS") {
         // OBJECTIVE COMPLETE — conclude the session successfully.
         setExecutionResult("COMPLETED");
         handleConcludeSession(updatedLogs);
         return;
       }
-      if (qTarget > 0 && (qTarget - qAchieved) > qRemaining) {
-        // Success is now impossible with the remaining attempts — fail safely.
+      if (live.status === "FAILED" && live.isImpossible) {
+        // Success is now mathematically impossible with the remaining attempts.
         setExecutionResult("FAILED");
         handleConcludeSession(updatedLogs);
         return;
@@ -876,6 +937,9 @@ export default function EvolutionChamber({
     // Authoritative qualifying-success count derived from actual landing
     // outcomes via the canonical qualifying-condition rules (not from EXECUTED).
     let qualifyingSuccessCount = 0;
+    // Canonical normalized requirements for the session snapshot (questMeta).
+    // Declared here so it is in scope for both evaluation and the report.
+    const canonReq = getCanonicalQuestRequirements(activePracticeQuest);
     if (activePracticeQuest) {
       const skillWickets: Record<string, number> = {};
       logsToUse.forEach(log => {
@@ -898,17 +962,29 @@ export default function EvolutionChamber({
         skillWickets
       };
 
-      // Evaluate quest completion based on ACTUAL LANDING OUTCOMES recorded in the
-      // session, not on the manual EXECUTED/MISSED assessment count. The manual
-      // assessments are for player tracking; the quest objective is evaluated from
-      // the delivery logs (perfect balls, close balls, dot balls, wickets, etc.).
-      const evalRes = evaluateQuestCompletion(activePracticeQuest, sessionStats, qualifyingSuccessCount);
+      // FINAL EVALUATION — structured CHAMBER_NET quests are evaluated strictly
+      // against the canonical normalized requirement object
+      // (evaluateFinalQuestResult). Legacy match-sim / dungeon quests keep the
+      // historical evaluator. Never description-guessing in either path.
+      let evalRes: { met: boolean; failures: string[]; reason?: string };
+      if (canonReq.qualifyingCondition && canonReq.successTarget > 0) {
+        const verdict = evaluateFinalQuestResult(activePracticeQuest, {
+          totalDeliveries: logsToUse.length,
+          qualifyingSuccess: qualifyingSuccessCount,
+          executed: manualQuestProgress.executed,
+          missed: manualQuestProgress.missed,
+        });
+        evalRes = { met: verdict.result === "SUCCESS", failures: verdict.failures, reason: verdict.reason };
+      } else {
+        evalRes = evaluateQuestCompletion(activePracticeQuest, sessionStats, qualifyingSuccessCount);
+      }
 
       questStatusObj = {
         questId: activePracticeQuest.id,
         questName: activePracticeQuest.name,
         met: evalRes.met,
-        failures: evalRes.failures
+        failures: evalRes.failures,
+        reason: evalRes.reason
       };
 
       // Objective resolution is reported as soon as it is reached/exhausted.
@@ -971,6 +1047,11 @@ export default function EvolutionChamber({
         executed: manualQuestProgress.executed,
         missed: manualQuestProgress.missed,
         qualifyingSuccess: qualifyingSuccessCount,
+        executionRequired: canonReq.executionRequired,
+        successTarget: canonReq.successTarget,
+        qualifyingCondition: canonReq.qualifyingCondition,
+        earlyCompletion: canonReq.earlyCompletion,
+        failureCondition: canonReq.failureCondition,
         requirements: activePracticeQuest.requirements,
         difficulty: activePracticeQuest.difficulty,
       } : undefined,
@@ -1309,6 +1390,17 @@ export default function EvolutionChamber({
                     <div className="h-2 bg-black border border-gray-800 rounded-full overflow-hidden">
                       <div className={`h-full rounded-full transition-all ${qs.met ? "bg-green-500" : "bg-red-500"}`} style={{ width: `${Math.min(100, (qualifyingCount / Math.max(1, target)) * 100)}%` }} />
                     </div>
+                    {/* Execution requirement assessment — separate from qualifying successes. */}
+                    {meta?.executionRequired ? (
+                      <div className="flex items-center justify-between text-[10px] text-gray-300 font-mono">
+                        <span>Executions required: <strong className="text-white">{meta.executionRequired}</strong> | Executed: <strong className={executedCount >= meta.executionRequired ? "text-green-400" : "text-red-400"}>{executedCount}</strong></span>
+                      </div>
+                    ) : null}
+                    {qs.reason && (
+                      <p className="text-[9.5px] font-mono text-gray-400 border-t border-gray-900 pt-1.5">
+                        <strong className={qs.met ? "text-green-400" : "text-red-400"}>REASON:</strong> {qs.reason}
+                      </p>
+                    )}
                     {!qs.met && qs.failures.length > 0 && (
                       <ul className="list-disc pl-4 text-[9px] font-mono text-red-300 space-y-0.5">
                         {qs.failures.map((f, i) => <li key={i}>{f}</li>)}
@@ -2247,20 +2339,52 @@ export default function EvolutionChamber({
                         </div>
                       </div>
 
+                      {/* WHAT YOU MUST DO — generated strictly from the
+                          structured requirement block. The description is
+                          explanatory text only and is never parsed here. */}
+                      {getQuestInstructionLines(activePracticeQuest).length > 0 && (
+                        <div className="p-3 bg-black/60 border border-purple-500/20 rounded-lg space-y-1.5">
+                          <span className="text-[9px] text-purple-300 font-black uppercase block tracking-wider">WHAT YOU MUST DO</span>
+                          <ul className="space-y-1">
+                            {getQuestInstructionLines(activePracticeQuest).map((line, lineIdx) => (
+                              <li key={lineIdx} className="text-[9.5px] text-gray-300 leading-relaxed flex gap-1.5">
+                                <span className="text-purple-400 font-black">▸</span>
+                                <span>{line}</span>
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+
                       <div className="space-y-2 text-[11px]">
                         <span className="text-[9px] text-gray-550 text-gray-500 block uppercase">REAL-TIME TELEMETRY MATRIX</span>
                         {getActiveQuestTarget(activePracticeQuest) > 0 && (
                           <div className="p-3 bg-black/70 border border-cyan-500/20 rounded-lg space-y-2">
+                            {/* SEPARATE counters: execution assessments and
+                                qualifying landing outcomes are DIFFERENT
+                                concepts and must never be collapsed into one. */}
                             <div className="flex items-center justify-between">
-                              <span className="text-[9px] text-cyan-300 font-black uppercase">Actual Objective Execution</span>
+                              <span className="text-[9px] text-cyan-300 font-black uppercase">Executed</span>
                               <span className="text-[10px] font-black text-white">
-                                {manualQuestProgress.executed} / {getActiveQuestTarget(activePracticeQuest)}
+                                {manualQuestProgress.executed} / {getActiveQuestExecutionRequired(activePracticeQuest) || "—"}
+                              </span>
+                            </div>
+                            <div className="h-1.5 bg-black border border-gray-900 rounded-full overflow-hidden">
+                              <div
+                                className="h-full bg-emerald-400 transition-all"
+                                style={{ width: `${getActiveQuestExecutionRequired(activePracticeQuest) > 0 ? Math.min(100, (manualQuestProgress.executed / getActiveQuestExecutionRequired(activePracticeQuest)) * 100) : 0}%` }}
+                              />
+                            </div>
+                            <div className="flex items-center justify-between">
+                              <span className="text-[9px] text-yellow-300 font-black uppercase">Qualifying</span>
+                              <span className="text-[10px] font-black text-white">
+                                {computeQualifyingSuccessCount(activePracticeQuest?.requirements || {}, deliveryLogs)} / {getActiveQuestTarget(activePracticeQuest)}
                               </span>
                             </div>
                             <div className="h-2 bg-black border border-gray-900 rounded-full overflow-hidden">
                               <div
                                 className="h-full bg-cyan-400 transition-all"
-                                style={{ width: `${Math.min(100, (manualQuestProgress.executed / Math.max(1, getActiveQuestTarget(activePracticeQuest))) * 100)}%` }}
+                                style={{ width: `${Math.min(100, (computeQualifyingSuccessCount(activePracticeQuest?.requirements || {}, deliveryLogs) / Math.max(1, getActiveQuestTarget(activePracticeQuest))) * 100)}%` }}
                               />
                             </div>
                             <div className="grid grid-cols-2 gap-2">

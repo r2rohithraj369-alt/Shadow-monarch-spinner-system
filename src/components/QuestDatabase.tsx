@@ -11,24 +11,36 @@ import { QuestDatabaseManager, CustomQuest, PressureScenarioData } from "../util
 import { playSystemClick, playSystemDing, playSystemError } from "../utils/audio";
 
 const BULK_IMPORT_EXAMPLE = `---
-Title: Perfect Spin Control
-Description: Deliver five perfect balls inside the target area without missing the intended line.
+Title: Leg Break Release Control
+Description: Deliver five perfect leg break balls with a consistent release point.
 Category: Practice
 Arena: Evolution Chamber
 Mode: Net Drill
 Overs: 2
 Skill: Leg Break
 Difficulty: Easy
+Total Balls: 12
+To Be Executed: 5
+Required Successes: 5
+Success Condition: Perfect Ball
+Early Completion: Yes
+Failure Condition: Attempt Window Exhausted Without Required Successes
 
 ---
-Title: Pressure Lock
-Description: Defend twelve runs in two overs while taking one wicket.
-Category: Challenge
+Title: Googly Line Hunter
+Description: Land four perfect googly deliveries on the target zone.
+Category: Practice
 Arena: Evolution Chamber
-Mode: Pressure Chamber
+Mode: Net Drill
 Overs: 2
 Skill: Googly
-Difficulty: Challenging
+Difficulty: Medium
+Total Balls: 10
+To Be Executed: 6
+Required Successes: 4
+Success Condition: Perfect or Close Ball
+Early Completion: Yes
+Failure Condition: Attempt Window Exhausted Without Required Successes
 ---`;
 
 interface QuestDatabaseProps {
@@ -166,6 +178,14 @@ export default function QuestDatabase({ onRefreshDirectives, onNavigateToTab, sk
         targetSkill: editingQuest.targetSkill || "LEG BREAK",
         difficulty: editingQuest.difficulty || "MEDIUM",
         objectivesText: editingQuest.objectivesText || editingQuest.description || "",
+        // Explicit structured quest logic (authoritative). These survive
+        // RAW TEXT -> COMPILER -> NORMALIZED -> STORED without being guessed.
+        totalBalls: editingQuest.totalBalls,
+        toBeExecuted: editingQuest.toBeExecuted,
+        requiredSuccesses: editingQuest.requiredSuccesses,
+        successCondition: editingQuest.successCondition,
+        earlyCompletion: editingQuest.earlyCompletion,
+        failureCondition: editingQuest.failureCondition,
       });
     } catch (validationError: any) {
       // The compiler rejected the quest definition — surface the exact failures
@@ -331,7 +351,11 @@ export default function QuestDatabase({ onRefreshDirectives, onNavigateToTab, sk
           // these would silently re-derive a different targetSuccessCount /
           // maxBalls than the one shown to the operator.
           toBeExecuted: qData.toBeExecuted,
-          totalBalls: qData.totalBalls
+          totalBalls: qData.totalBalls,
+          requiredSuccesses: qData.requiredSuccesses,
+          successCondition: qData.successCondition,
+          earlyCompletion: qData.earlyCompletion,
+          failureCondition: qData.failureCondition
         });
         questsAdded.push(newQuest);
       } catch (validationError: any) {
@@ -1942,10 +1966,126 @@ Objectives: Keep run rate below 6.5.`);
                     </select>
                   </div>
 
+                  {/* ---- EXPLICIT STRUCTURED QUEST LOGIC (AUTHORITATIVE) ---- */}
+                  <div className="col-span-2 space-y-2 border border-cyan-900/50 rounded-xl p-4 bg-black/40">
+                    <div className="flex justify-between items-center">
+                      <label className="text-[10px] text-cyan-300 uppercase font-bold">Quest Logic (Authoritative)</label>
+                      <span className="text-[9px] text-cyan-600">The application evaluates THESE fields — never the description.</span>
+                    </div>
+                    <div className="grid grid-cols-3 gap-3">
+                      <div className="space-y-1.5">
+                        <label className="text-[10px] text-zinc-400 uppercase font-bold">Total Balls</label>
+                        <input
+                          type="number"
+                          min={1}
+                          placeholder="12"
+                          value={editingQuest.totalBalls ?? ""}
+                          onChange={(e) => setEditingQuest({ ...editingQuest, totalBalls: e.target.value === "" ? undefined : Number(e.target.value) })}
+                          className="w-full bg-black/60 border border-zinc-850 p-3 rounded-xl focus:outline-none focus:border-cyan-500 text-white text-xs"
+                        />
+                      </div>
+                      <div className="space-y-1.5">
+                        <label className="text-[10px] text-zinc-400 uppercase font-bold">To Be Executed</label>
+                        <input
+                          type="number"
+                          min={0}
+                          placeholder="5"
+                          value={editingQuest.toBeExecuted ?? ""}
+                          onChange={(e) => setEditingQuest({ ...editingQuest, toBeExecuted: e.target.value === "" ? undefined : Number(e.target.value) })}
+                          className="w-full bg-black/60 border border-zinc-850 p-3 rounded-xl focus:outline-none focus:border-cyan-500 text-white text-xs"
+                        />
+                      </div>
+                      <div className="space-y-1.5">
+                        <label className="text-[10px] text-zinc-400 uppercase font-bold">Required Successes</label>
+                        <input
+                          type="number"
+                          min={1}
+                          placeholder="5"
+                          value={editingQuest.requiredSuccesses ?? ""}
+                          onChange={(e) => setEditingQuest({ ...editingQuest, requiredSuccesses: e.target.value === "" ? undefined : Number(e.target.value) })}
+                          className="w-full bg-black/60 border border-zinc-850 p-3 rounded-xl focus:outline-none focus:border-cyan-500 text-white text-xs"
+                        />
+                      </div>
+                      <div className="space-y-1.5">
+                        <label className="text-[10px] text-zinc-400 uppercase font-bold">Success Condition</label>
+                        <select
+                          value={editingQuest.successCondition || ""}
+                          onChange={(e) => setEditingQuest({ ...editingQuest, successCondition: e.target.value || undefined })}
+                          className="w-full bg-black/60 border border-zinc-850 p-3 rounded-xl focus:outline-none text-zinc-300"
+                        >
+                          <option value="">— Select —</option>
+                          <option value="Perfect Ball">Perfect Ball</option>
+                          <option value="Close Ball">Close Ball</option>
+                          <option value="Perfect or Close Ball">Perfect or Close Ball</option>
+                          <option value="Dot Ball">Dot Ball</option>
+                          <option value="Wicket">Wicket</option>
+                        </select>
+                      </div>
+                      <div className="space-y-1.5">
+                        <label className="text-[10px] text-zinc-400 uppercase font-bold">Early Completion</label>
+                        <select
+                          value={editingQuest.earlyCompletion === false ? "No" : "Yes"}
+                          onChange={(e) => setEditingQuest({ ...editingQuest, earlyCompletion: e.target.value === "Yes" })}
+                          className="w-full bg-black/60 border border-zinc-850 p-3 rounded-xl focus:outline-none text-zinc-300"
+                        >
+                          <option value="Yes">Yes</option>
+                          <option value="No">No</option>
+                        </select>
+                      </div>
+                      <div className="space-y-1.5">
+                        <label className="text-[10px] text-zinc-400 uppercase font-bold">Failure Condition</label>
+                        <select
+                          value={editingQuest.failureCondition || "Attempt Window Exhausted Without Required Successes"}
+                          onChange={(e) => setEditingQuest({ ...editingQuest, failureCondition: e.target.value })}
+                          className="w-full bg-black/60 border border-zinc-850 p-3 rounded-xl focus:outline-none text-zinc-300"
+                        >
+                          <option value="Attempt Window Exhausted Without Required Successes">Window Exhausted Without Required Successes</option>
+                          <option value="No Misses Allowed">No Misses Allowed</option>
+                        </select>
+                      </div>
+                    </div>
+
+                    {/* QUEST LOGIC PREVIEW */}
+                    {(() => {
+                      const tb = Number(editingQuest.totalBalls || 0);
+                      const te = Number(editingQuest.toBeExecuted || 0);
+                      const rs = Number(editingQuest.requiredSuccesses || 0);
+                      const sc = editingQuest.successCondition || "";
+                      const issues: string[] = [];
+                      if (tb <= 0) issues.push("Total Balls must be greater than 0");
+                      if (rs <= 0) issues.push("Required Successes must be greater than 0");
+                      if (!sc) issues.push("Success Condition must be selected");
+                      if (rs > 0 && tb > 0 && rs > tb) issues.push("Required Successes exceeds Total Balls");
+                      if (te > 0 && tb > 0 && te > tb) issues.push("To Be Executed exceeds Total Balls");
+                      return (
+                        <div className={`rounded-lg p-3 border ${issues.length > 0 ? "border-red-500/40 bg-red-950/20" : "border-emerald-500/30 bg-emerald-950/10"}`}>
+                          <span className={`text-[9px] font-black uppercase block mb-1.5 ${issues.length > 0 ? "text-red-300" : "text-emerald-300"}`}>
+                            {issues.length > 0 ? "QUEST LOGIC INVALID" : "QUEST LOGIC PREVIEW"}
+                          </span>
+                          <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-[10px] text-zinc-300 font-sans">
+                            <span>Attempt Window: <strong className="text-white">{tb > 0 ? `${tb} balls` : "—"}</strong></span>
+                            <span>Execution Requirement: <strong className="text-white">{te > 0 ? `${te} executions` : "None"}</strong></span>
+                            <span>Success Requirement: <strong className="text-white">{rs > 0 ? `${rs} qualifying balls` : "—"}</strong></span>
+                            <span>Success Condition: <strong className="text-white">{sc || "—"}</strong></span>
+                            <span>Early Completion: <strong className="text-white">{editingQuest.earlyCompletion === false ? "Disabled" : "Enabled"}</strong></span>
+                            <span>Failure Condition: <strong className="text-white">{editingQuest.failureCondition === "No Misses Allowed" ? "No Misses Allowed" : "Window exhausted without required successes"}</strong></span>
+                          </div>
+                          {issues.length > 0 && (
+                            <ul className="mt-2 space-y-0.5">
+                              {issues.map((iss) => (
+                                <li key={iss} className="text-[9px] text-red-400">✗ {iss}</li>
+                              ))}
+                            </ul>
+                          )}
+                        </div>
+                      );
+                    })()}
+                  </div>
+
                   <div className="space-y-1.5 col-span-2">
                     <div className="flex justify-between items-center">
                       <label className="text-[10px] text-zinc-400 uppercase font-bold">Objectives Criteria Script</label>
-                      <span className="text-[9px] text-zinc-500">Natural language interpreter is enabled</span>
+                      <span className="text-[9px] text-zinc-500">Explanatory text only — the Quest Logic fields above are authoritative</span>
                     </div>
                     <textarea
                       required
@@ -2095,17 +2235,24 @@ Objectives: Keep run rate below 6.5.`);
                   {/* PREVIEW OF READY QUESTS */}
                   {parsedPreview.readyQuests.length > 0 && (
                     <div className="space-y-2">
-                      <h4 className="text-[10px] text-cyan-400 font-bold uppercase tracking-wider">Ready Quests Preview</h4>
-                      <div className="bg-black/40 border border-zinc-900 rounded-xl p-3 max-h-32 overflow-y-auto space-y-2 text-[11px] text-left">
+                      <h4 className="text-[10px] text-cyan-400 font-bold uppercase tracking-wider">Ready Quests Preview — Structured Interpretation</h4>
+                      <div className="bg-black/40 border border-zinc-900 rounded-xl p-3 max-h-48 overflow-y-auto space-y-3 text-[11px] text-left">
                         {parsedPreview.readyQuests.map((q, idx) => (
-                          <div key={idx} className="flex justify-between items-start border-b border-zinc-900/40 pb-1.5 last:border-0 last:pb-0">
-                            <div>
-                              <span className="text-zinc-100 font-bold">{q.title}</span>
-                              <span className="text-[9px] text-zinc-500 block">{q.description.substring(0, 80)}...</span>
+                          <div key={idx} className="border-b border-zinc-900/40 pb-2.5 last:border-0 last:pb-0">
+                            <div className="flex justify-between items-start">
+                              <span className="text-zinc-100 font-bold font-mono">QUEST: {q.title}</span>
+                              <span className="px-1.5 py-0.5 text-[8px] rounded border border-cyan-500/20 bg-cyan-950/15 text-cyan-400 uppercase font-mono">
+                                {q.difficulty}
+                              </span>
                             </div>
-                            <span className="px-1.5 py-0.5 text-[8px] rounded border border-cyan-500/20 bg-cyan-950/15 text-cyan-400 uppercase font-mono">
-                              {q.difficulty}
-                            </span>
+                            <div className="grid grid-cols-2 gap-x-4 gap-y-0.5 mt-1.5 text-[10px] font-mono text-zinc-400">
+                              <span>ATTEMPT WINDOW: <strong className="text-white">{Number(q.totalBalls) > 0 ? `${q.totalBalls} balls` : "—"}</strong></span>
+                              <span>EXECUTION REQUIRED: <strong className="text-white">{Number(q.toBeExecuted) > 0 ? q.toBeExecuted : "None"}</strong></span>
+                              <span>SUCCESS TARGET: <strong className="text-white">{Number(q.requiredSuccesses) > 0 ? q.requiredSuccesses : "—"}</strong></span>
+                              <span>QUALIFYING CONDITION: <strong className="text-white">{q.successCondition || "—"}</strong></span>
+                              <span>EARLY COMPLETION: <strong className="text-white">{q.earlyCompletion === false || String(q.earlyCompletion).toLowerCase() === "no" ? "No" : "Yes"}</strong></span>
+                              <span>FAILURE CONDITION: <strong className="text-white">{String(q.failureCondition || "").toLowerCase().includes("miss") ? "No misses allowed" : "Window exhausted without required successes"}</strong></span>
+                            </div>
                           </div>
                         ))}
                       </div>
