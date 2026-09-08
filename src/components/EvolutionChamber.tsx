@@ -469,6 +469,19 @@ export default function EvolutionChamber({
   const [executionResult, setExecutionResult] = useState<"ACTIVE" | "COMPLETED" | "FAILED">("ACTIVE");
   const completionReportedRef = useRef(false);
 
+  // ---- CURRENT-SESSION EXECUTION TELEMETRY (TRANSIENT) ----
+  // This is the ONLY source for the live "Delivery telemetry" feed shown inside
+  // the chamber. It starts empty on every quest switch / session start and is
+  // kept strictly separate from the PERSISTENT quest `executionHistory` (which
+  // accumulates across sessions as a record) and from HISTORICAL drill reports.
+  interface QuestExecutionEntry {
+    ball: number;
+    over: number;
+    result: "EXECUTED" | "MISSED";
+    timestamp: string;
+  }
+  const [sessionExecutionHistory, setSessionExecutionHistory] = useState<QuestExecutionEntry[]>([]);
+
   // Recent completed review overlay
   const [completedSessionReview, setCompletedSessionReview] = useState<LoggedSession | null>(null);
   const [expandedSessionHistoryId, setExpandedSessionHistoryId] = useState<string | null>(null);
@@ -524,6 +537,7 @@ export default function EvolutionChamber({
     setDeliveryLogs([]);
     setManualQuestProgress({ executed: 0, missed: 0 });
     setLastAssessedQuestDelivery(0);
+    setSessionExecutionHistory([]); // transient telemetry resets with the session
     setExecutionResult(activePracticeQuest.completed ? "COMPLETED" : activePracticeQuest.lastAttemptStatus === "FAILED" ? "FAILED" : "ACTIVE");
     completionReportedRef.current = activePracticeQuest.completed || activePracticeQuest.lastAttemptStatus === "FAILED";
   }, [activePracticeQuestId]);
@@ -553,6 +567,7 @@ export default function EvolutionChamber({
       // must never carry into a new session.
       setManualQuestProgress({ executed: 0, missed: 0 });
       setLastAssessedQuestDelivery(0);
+      setSessionExecutionHistory([]); // new session ⇒ empty current-session telemetry
       setExecutionResult("ACTIVE");
       completionReportedRef.current = false;
       setSessionActive(true);
@@ -653,10 +668,17 @@ export default function EvolutionChamber({
       executed: manualQuestProgress.executed + (result === "EXECUTED" ? 1 : 0),
       missed: manualQuestProgress.missed + (result === "MISSED" ? 1 : 0),
     };
+    // Persistent quest execution history — accumulates across sessions as a
+    // historical record of the quest (kept intact and never used for the live feed).
     const history = [
       ...(activePracticeQuest.executionHistory || []),
       { ball: ((deliveryLogs.length - 1) % 6) + 1, over: Math.ceil(deliveryLogs.length / 6), result, timestamp: new Date().toISOString() }
     ];
+    // CURRENT-SESSION telemetry — the live chamber feed. Starts empty per session.
+    setSessionExecutionHistory((prev) => [
+      ...prev,
+      { ball: ((deliveryLogs.length - 1) % 6) + 1, over: Math.ceil(deliveryLogs.length / 6), result, timestamp: new Date().toISOString() }
+    ]);
     setManualQuestProgress(nextProgress);
     setLastAssessedQuestDelivery(deliveryLogs.length);
 
@@ -1156,6 +1178,7 @@ export default function EvolutionChamber({
     setCompletedSessionReview(null);
     setSessionActive(false);
     setDeliveryLogs([]);
+    setSessionExecutionHistory([]); // close session ⇒ current-session telemetry cleared
     setPressureScenario(null);
     if (onClearPreselectedPressureScenario) {
       onClearPreselectedPressureScenario();
@@ -2432,11 +2455,11 @@ export default function EvolutionChamber({
 
                           {activePracticeQuest.objectiveDescription && <p className="text-[9px] text-gray-400 leading-relaxed border-t border-gray-900 pt-2"><strong className="text-purple-300">Objective:</strong> {activePracticeQuest.objectiveDescription}</p>}
 
-                          {(activePracticeQuest.executionHistory || []).length > 0 && (
+                          {sessionExecutionHistory.length > 0 && (
                             <div className="border-t border-gray-900 pt-2 space-y-1">
-                              <span className="text-[8.5px] text-purple-400 uppercase font-black">Delivery telemetry</span>
+                              <span className="text-[8.5px] text-purple-400 uppercase font-black">Delivery telemetry — current session</span>
                               <div className="max-h-24 overflow-y-auto space-y-1 text-[9px] text-gray-400">
-                                {(activePracticeQuest.executionHistory || []).slice(-12).reverse().map((entry, index) => <div key={`${entry.timestamp}-${index}`} className="flex justify-between"><span>O{entry.over} B{entry.ball}</span><strong className={entry.result === "EXECUTED" ? "text-emerald-400" : "text-red-400"}>{entry.result === "EXECUTED" ? "EXECUTED ✓" : "MISSED ✕"}</strong></div>)}
+                                {sessionExecutionHistory.slice(-12).reverse().map((entry, index) => <div key={`${entry.timestamp}-${index}`} className="flex justify-between"><span>O{entry.over} B{entry.ball}</span><strong className={entry.result === "EXECUTED" ? "text-emerald-400" : "text-red-400"}>{entry.result === "EXECUTED" ? "EXECUTED ✓" : "MISSED ✕"}</strong></div>)}
                               </div>
                             </div>
                           )}

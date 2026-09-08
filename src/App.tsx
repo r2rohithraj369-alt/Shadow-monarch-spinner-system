@@ -3532,6 +3532,12 @@ export default function App() {
                         setSettings(DEFAULT_SETTINGS);
                         SettingsManager.saveSettings(DEFAULT_SETTINGS);
                       }}
+                      userId={cloudSync.getSession()?.user?.id || "local-player"}
+                      onFullGameReset={() => {
+                        // Authoritative rehydration: after the cloud reset the
+                        // entire profile is rebuilt from the reset cloud state.
+                        window.location.reload();
+                      }}
                     />
                   )}
                 </motion.div>

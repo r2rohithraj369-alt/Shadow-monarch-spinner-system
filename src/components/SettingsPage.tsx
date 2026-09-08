@@ -4,21 +4,26 @@ import {
   Settings, Palette, Image, Sliders, Volume2, Bell, Play, Database, Info, 
   Sparkles, Check, Trash2, Download, Upload, RefreshCw, Eye, Save, VolumeX,
   Plus, CheckCircle, ShieldAlert, Zap, Globe, Cpu, Gamepad2, Layers, SlidersHorizontal,
-  Star
+  Star, RotateCcw, AlertTriangle, Lock
 } from "lucide-react";
 import { AppSettings, BUILT_IN_THEMES, BACKGROUNDS, SettingsManager, ThemePreset } from "../utils/settingsManager";
 import { playSystemClick, playSystemDing, playPortalSwoosh } from "../utils/audio";
+import { validateResetPhrase, validateConfirmationPhrase, getResetCount, canReset, performGameReset, ResetProgress } from "../utils/gameResetManager";
 
 interface SettingsPageProps {
   settings: AppSettings;
   onUpdateSettings: (settings: AppSettings) => void;
   onResetSettings: () => void;
+  onFullGameReset: () => void;
+  userId: string;
 }
 
 export default function SettingsPage({
   settings,
   onUpdateSettings,
-  onResetSettings
+  onResetSettings,
+  onFullGameReset,
+  userId
 }: SettingsPageProps) {
   // Navigation tabs in settings page
   const [activeSubTab, setActiveSubTab] = useState<string>("THEMES");
@@ -46,6 +51,15 @@ export default function SettingsPage({
   const [bgSearch, setBgSearch] = useState("");
   const [bgCategory, setBgCategory] = useState("All");
 
+  // Full Game Reset state
+  const [resetStep, setResetStep] = useState<"IDLE" | "PHRASE" | "CONFIRM" | "PROCESSING" | "DONE">("IDLE");
+  const [resetPhraseInput, setResetPhraseInput] = useState("");
+  const [resetConfirmInput, setResetConfirmInput] = useState("");
+  const [resetCount, setResetCount] = useState<number>(0);
+  const [resetProgress, setResetProgress] = useState<string>("");
+  const [resetError, setResetError] = useState<string>("");
+  const [isResetting, setIsResetting] = useState(false);
+
   useEffect(() => {
     let frameId: number;
     let lastTime = performance.now();
@@ -68,6 +82,68 @@ export default function SettingsPage({
 
     return () => cancelAnimationFrame(frameId);
   }, [settings.gameplay.fpsCounter]);
+
+  // Load reset count on mount and when GAME_RESET tab is selected
+  useEffect(() => {
+    if (activeSubTab === "GAME_RESET") {
+      getResetCount(userId).then((count) => {
+        setResetCount(count);
+      }).catch(() => {
+        setResetCount(0);
+      });
+    }
+  }, [activeSubTab, userId]);
+
+  // Full Game Reset handlers
+  const handleResetPhraseSubmit = () => {
+    if (validateResetPhrase(resetPhraseInput)) {
+      setResetStep("CONFIRM");
+      setResetError("");
+    } else {
+      setResetError("Invalid phrase. Please enter the exact phrase to proceed.");
+    }
+  };
+
+  const handleResetConfirmSubmit = async () => {
+    if (!validateConfirmationPhrase(resetConfirmInput)) {
+      setResetError("Invalid confirmation phrase. Please enter 'CONFIRM RESET' to proceed.");
+      return;
+    }
+
+    if (!canReset(resetCount)) {
+      setResetError("Maximum number of resets (2/2) has been reached.");
+      return;
+    }
+
+    setIsResetting(true);
+    setResetStep("PROCESSING");
+    setResetError("");
+
+    try {
+      await performGameReset(userId, (step: string) => {
+        setResetProgress(step);
+      });
+      setResetStep("DONE");
+      setResetCount((prev) => prev + 1);
+      // Trigger the parent to reload state
+      setTimeout(() => {
+        onFullGameReset();
+      }, 2000);
+    } catch (err: any) {
+      setResetError(err?.message || "Reset failed. Please try again.");
+      setResetStep("IDLE");
+    } finally {
+      setIsResetting(false);
+    }
+  };
+
+  const handleResetCancel = () => {
+    setResetStep("IDLE");
+    setResetPhraseInput("");
+    setResetConfirmInput("");
+    setResetError("");
+    setResetProgress("");
+  };
 
   // Recalculate stats when requested
   const handleRefreshStats = () => {
@@ -378,7 +454,8 @@ export default function SettingsPage({
     { id: "SOUND", label: "Audio Terminal", icon: Volume2, desc: "Fine-tune individual volume variables" },
     { id: "GAMEPLAY", label: "Preferences", icon: Gamepad2, desc: "Performance switches & notification signals" },
     { id: "STORAGE", label: "Data & Storage", icon: Database, desc: "Export credentials & inspect local caches" },
-    { id: "ABOUT", label: "Version Manual", icon: Info, desc: "System release notes & credentials" }
+    { id: "ABOUT", label: "Version Manual", icon: Info, desc: "System release notes & credentials" },
+    { id: "GAME_RESET", label: "Full Game Reset", icon: RotateCcw, desc: "Reset all player progress (2 uses max)" }
   ];
 
   return (
@@ -1627,6 +1704,151 @@ export default function SettingsPage({
                     ))}
                   </div>
                 </div>
+              </motion.div>
+            )}
+
+            {activeSubTab === "GAME_RESET" && (
+              <motion.div
+                key="GAME_RESET"
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -10 }}
+                className="space-y-6"
+              >
+                {/* WARNING HEADER */}
+                <div className="bg-red-950/20 border border-red-500/30 rounded-2xl p-6">
+                  <div className="flex items-center gap-3 mb-4">
+                    <div className="w-12 h-12 rounded-xl bg-red-950/50 border border-red-500/30 flex items-center justify-center text-red-400">
+                      <AlertTriangle className="w-6 h-6" />
+                    </div>
+                    <div>
+                      <span className="text-[8px] text-red-400 font-extrabold uppercase block tracking-wider leading-none">⚠️ CRITICAL SYSTEM ACTION</span>
+                      <span className="text-lg font-black text-white uppercase block mt-1 leading-none">Full Game Reset</span>
+                    </div>
+                  </div>
+                  <p className="text-xs text-gray-400 font-sans leading-relaxed">
+                    This action will reset <strong className="text-white">ALL player-owned game state</strong> to its initial values. 
+                    This includes player progression, XP, levels, skill XP, mastery, attributes, quest progress, pending quests, 
+                    evolution progress, evolution trials, match history, analytics data, and ascension progress.
+                  </p>
+                  <p className="text-xs text-yellow-400 font-sans leading-relaxed mt-2">
+                    <strong>⚠️ The Quest Database will NOT be deleted.</strong> Your permanent quest library will remain intact.
+                  </p>
+                </div>
+
+                {/* RESET COUNT DISPLAY */}
+                <div className="bg-[#030303] border border-gray-900 rounded-2xl p-6">
+                  <div className="flex items-center justify-between mb-4">
+                    <span className="text-[10px] text-gray-500 font-bold uppercase tracking-wider">Reset Usage</span>
+                    <span className={`text-sm font-black ${resetCount >= 2 ? "text-red-400" : "text-cyan-400"}`}>
+                      {resetCount}/2
+                    </span>
+                  </div>
+                  <div className="w-full bg-gray-900 rounded-full h-3 overflow-hidden">
+                    <div 
+                      className={`h-full rounded-full transition-all duration-500 ${resetCount >= 2 ? "bg-red-500" : "bg-cyan-500"}`}
+                      style={{ width: `${(resetCount / 2) * 100}%` }}
+                    />
+                  </div>
+                  {resetCount >= 2 && (
+                    <p className="text-xs text-red-400 font-sans mt-2">
+                      <Lock className="w-3 h-3 inline mr-1" />
+                      Maximum resets reached. This feature is permanently disabled.
+                    </p>
+                  )}
+                </div>
+
+                {/* RESET STEPS */}
+                {resetCount < 2 && (
+                  <div className="bg-[#030303] border border-gray-900 rounded-2xl p-6 space-y-4">
+                    <span className="text-[10px] text-gray-500 font-bold uppercase tracking-wider block">Reset Process</span>
+
+                    {/* Step 1: Enter ARISE */}
+                    {resetStep === "IDLE" && (
+                      <div className="space-y-3">
+                        <p className="text-xs text-gray-400 font-sans">
+                          Step 1: Enter the reset phrase to proceed.
+                        </p>
+                        <div className="flex gap-2">
+                          <input
+                            type="text"
+                            value={resetPhraseInput}
+                            onChange={(e) => setResetPhraseInput(e.target.value)}
+                            placeholder="Enter reset phrase..."
+                            className="flex-1 bg-black border border-gray-800 rounded-lg px-3 py-2 text-xs text-white placeholder-gray-600 focus:border-cyan-500 focus:outline-none"
+                          />
+                          <button
+                            onClick={handleResetPhraseSubmit}
+                            className="px-4 py-2 bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-bold rounded-lg transition-colors"
+                          >
+                            Submit
+                          </button>
+                        </div>
+                        <p className="text-[10px] text-gray-600 font-sans">
+                          Hint: The phrase is "ARISE" (case-sensitive)
+                        </p>
+                      </div>
+                    )}
+
+                    {/* Step 2: Enter CONFIRM RESET */}
+                    {resetStep === "CONFIRM" && (
+                      <div className="space-y-3">
+                        <p className="text-xs text-yellow-400 font-sans">
+                          ⚠️ Step 2: This action cannot be undone. Enter the confirmation phrase to proceed.
+                        </p>
+                        <div className="flex gap-2">
+                          <input
+                            type="text"
+                            value={resetConfirmInput}
+                            onChange={(e) => setResetConfirmInput(e.target.value)}
+                            placeholder="Enter confirmation phrase..."
+                            className="flex-1 bg-black border border-gray-800 rounded-lg px-3 py-2 text-xs text-white placeholder-gray-600 focus:border-red-500 focus:outline-none"
+                          />
+                          <button
+                            onClick={handleResetConfirmSubmit}
+                            className="px-4 py-2 bg-red-600 hover:bg-red-500 text-white text-xs font-bold rounded-lg transition-colors"
+                          >
+                            Reset
+                          </button>
+                        </div>
+                        <button
+                          onClick={handleResetCancel}
+                          className="text-xs text-gray-500 hover:text-gray-300 font-sans"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    )}
+
+                    {/* Processing */}
+                    {resetStep === "PROCESSING" && (
+                      <div className="space-y-3">
+                        <p className="text-xs text-yellow-400 font-sans animate-pulse">
+                          ⏳ Processing reset... Please wait.
+                        </p>
+                        <div className="bg-black rounded-lg p-3 border border-gray-800">
+                          <p className="text-[10px] text-cyan-400 font-mono">{resetProgress}</p>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Done */}
+                    {resetStep === "DONE" && (
+                      <div className="space-y-3">
+                        <p className="text-xs text-green-400 font-sans">
+                          ✅ Reset complete! The application will reload momentarily.
+                        </p>
+                      </div>
+                    )}
+
+                    {/* Error */}
+                    {resetError && (
+                      <div className="bg-red-950/20 border border-red-500/30 rounded-lg p-3">
+                        <p className="text-xs text-red-400 font-sans">{resetError}</p>
+                      </div>
+                    )}
+                  </div>
+                )}
               </motion.div>
             )}
           </AnimatePresence>

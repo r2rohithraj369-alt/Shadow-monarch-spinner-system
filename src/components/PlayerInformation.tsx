@@ -1259,6 +1259,20 @@ export default function PlayerInformation({
                   </div>
 
                   <div className="space-y-1 border-t border-zinc-900 pt-3">
+                    <h5 className="text-white font-mono font-bold uppercase">Q: What is the difference between EXECUTION and QUALIFICATION?</h5>
+                    <p className="text-zinc-400">
+                      A: They are two independent measurements. <strong className="text-zinc-200">Qualification</strong> is decided only by where the ball lands — a Perfect Ball, Close Ball, dot ball, or wicket, as defined by the quest's Success Condition. <strong className="text-zinc-200">Execution</strong> is your own EXECUTED / MISSED assessment of each delivery in the attempt window. A Perfect Ball you assess as MISSED still qualifies (the landing happened); a Short Ball you assess as EXECUTED never qualifies. Neither counter merges into the other.
+                    </p>
+                  </div>
+
+                  <div className="space-y-1 border-t border-zinc-900 pt-3">
+                    <h5 className="text-white font-mono font-bold uppercase">Q: What makes a structured quest succeed or fail?</h5>
+                    <p className="text-zinc-400">
+                      A: Every structured chamber quest carries an explicit requirement block: <strong className="text-zinc-200">Total Balls</strong> (the attempt window — never silently replaced by Overs × 6), <strong className="text-zinc-200">To Be Executed</strong> (how many deliveries must be assessed EXECUTED), <strong className="text-zinc-200">Required Successes</strong> (how many qualifying landings are needed), <strong className="text-zinc-200">Success Condition</strong> (which landings qualify), <strong className="text-zinc-200">Early Completion</strong> (finish as soon as the targets are met), and <strong className="text-zinc-200">Failure Condition</strong>. A single miss does NOT fail a quest — failure happens only when the window is exhausted without the targets, when the remaining balls can no longer mathematically reach the target, or when an explicit "no misses allowed" condition is triggered.
+                    </p>
+                  </div>
+
+                  <div className="space-y-1 border-t border-zinc-900 pt-3">
                     <h5 className="text-white font-mono font-bold uppercase">Q: How do I unlock Monarch Rank?</h5>
                     <p className="text-zinc-400">
                       A: Reaching level 100 and completing all SSS-Rank Ascension challenges unlocks the supreme Monarch title, granting maximum stat multipliers and sovereign aura profiles.

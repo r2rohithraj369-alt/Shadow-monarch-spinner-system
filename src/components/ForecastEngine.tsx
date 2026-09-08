@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { 
   TrendingUp, Clock, AlertCircle, Compass, Zap, 
@@ -8,6 +8,7 @@ import {
 } from "lucide-react";
 import { PlayerProfile, AIAnalysisResponse, SkillItem, DungeonRecord } from "../types";
 import { playSystemClick, playSystemDing } from "../utils/audio";
+import { computePlayerAnalytics, PlayerAnalytics } from "../utils/playerAnalytics";
 
 interface ForecastEngineProps {
   player: PlayerProfile;
@@ -60,6 +61,23 @@ export default function ForecastEngine({
   const [showShadowPath, setShowShadowPath] = useState(false);
   const [selectedRankIndex, setSelectedRankIndex] = useState<number>(1); // Defaults to D-Rank
 
+  // Authoritative player analytics from real stored data
+  const [analytics, setAnalytics] = useState<PlayerAnalytics | null>(null);
+  useEffect(() => {
+    const result = computePlayerAnalytics({
+      player,
+      skills,
+      attributes: [],
+      dungeons,
+      chamberSessions: [],
+      evolutionHistory: [],
+      practiceQuests: [],
+      completedQuestIds: [],
+      failedQuestIds: [],
+    });
+    setAnalytics(result);
+  }, [player, skills, dungeons]);
+
   const finalPercent = aiAnalysis ? aiAnalysis.forecastPercent : player.probabilityOfNextStatus;
 
   // Real-time sports metrics
@@ -109,11 +127,12 @@ export default function ForecastEngine({
   const grandTotalBalls = player.lifetimeDeliveriesBowled || dungeons.reduce((sum, d) => sum + (d.overs * 6), 0);
   const careerOvers = (grandTotalBalls / 6).toFixed(1);
 
-  // Real spinner release rate: professional spin bowlers clock around 1600-2400 RPM
-  const currentRPM = 0;
+  // Analytics-based real values (no fabrication)
+  const currentRPM = analytics?.turnPotential.value || 0;
+  const hasRPMData = analytics ? !analytics.turnPotential.insufficientData : false;
 
-  // Lateral angle break deviation (usually around 1.5 to 6.5 degrees inside pitch dust layers)
-  const lateralDeviationDegrees = "0.0";
+  // Lateral angle break deviation derived from drift analytics
+  const lateralDeviationDegrees = hasRPMData ? (analytics?.driftConfidence.value || 0).toFixed(1) : "0.0";
 
   // Bowling strike rate: balls bowled per wicket taken
   const careerWickets = player.lifetimeWickets || totalWickets;
@@ -609,7 +628,7 @@ export default function ForecastEngine({
 
                       <div className="bg-[#09090b] p-2 rounded border border-gray-950">
                         <span className="text-[8px] text-gray-500 block uppercase">Perfect Balls Bowled:</span>
-                        <strong className="text-cyan-400 text-xs">{Math.round(grandTotalBalls * 0.42 + (player.level * 2.5))} Deliveries</strong>
+                        <strong className="text-cyan-400 text-xs">{analytics ? `${analytics.raw.perfectDeliveries} Deliveries` : "Insufficient historical data"}</strong>
                         <span className="text-[8px] text-gray-650 block mt-0.5 font-sans">
                           Pitch-Map Accuracy Indicator
                         </span>
