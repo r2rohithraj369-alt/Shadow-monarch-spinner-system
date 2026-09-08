@@ -1,4 +1,5 @@
 import { getSupabase } from "./supabaseClient";
+import { purgePlayerScopedStorage } from "./playerStorage";
 
 /**
  * Game Reset Manager
@@ -124,7 +125,19 @@ export function validateConfirmationPhrase(phrase: string): boolean {
 
 /**
  * Perform the actual game reset.
- * This clears player-owned state while preserving the Quest Database.
+ *
+ * This clears PLAYER-OWNED state while preserving the permanent Quest Database
+ * (global library) and the pressure-scenario library.
+ *
+ * Atomicity strategy (client-side safest possible ordering):
+ *   1. Verify eligibility (cloud-authoritative count).
+ *   2. Upload the fresh (reset) profile to the cloud.
+ *   3. Only AFTER the data reset succeeded, increment the reset counter.
+ *   4. If the counter increment fails, compensate by restoring the previous
+ *      profile and report an honest failure — the user keeps their data and
+ *      their reset budget.
+ * The previous implementation incremented the counter first and could consume
+ * a reset without resetting anything.
  */
 export async function performGameReset(
   userId: string,
@@ -136,14 +149,15 @@ export async function performGameReset(
   }
 
   try {
-    // Step 1: Verify reset count
+    // Step 1: Verify reset eligibility (cloud-authoritative)
     onProgress?.("Verifying reset eligibility...");
     const currentState = await getGameResetState(userId);
     if (!currentState.canReset) {
       return { success: false, error: "Maximum resets reached. Reset is permanently disabled." };
     }
 
-    // Step 2: Get current profile to extract quest database
+    // Step 2: Fetch the current cloud profile — needed to preserve the
+    // permanent Quest Database / pressure library and to allow rollback.
     onProgress?.("Preserving Quest Database...");
     const { data: profileData, error: fetchError } = await supabase
       .from("player_profiles")
@@ -155,49 +169,32 @@ export async function performGameReset(
       console.warn("[GameReset] Could not fetch profile:", fetchError);
     }
 
-    const questDatabase = profileData?.profile_data?.questDatabase || [];
-    const pressureDatabase = profileData?.profile_data?.pressureScenarios || [];
+    const previousProfile = profileData?.profile_data || null;
+    const cloudQuestDatabase = previousProfile?.questDatabase;
+    const cloudPressure = previousProfile?.pressureScenarios;
 
-    // Step 3: Increment reset count
-    onProgress?.("Incrementing reset count...");
-    await incrementResetCount(userId);
-
-    // Step 4: Clear player state in localStorage (except quest database)
-    onProgress?.("Clearing player progression data...");
-    const questDbJson = JSON.stringify(questDatabase);
-    const pressureDbJson = JSON.stringify(pressureDatabase);
-
-    // Clear all localStorage keys
-    const keysToPreserve = [
-      `monarch_quest_db_${userId}`,
-      `monarch_pressure_db_${userId}`,
-    ];
-
-    const preservedValues: Record<string, string | null> = {};
-    keysToPreserve.forEach((key) => {
-      preservedValues[key] = localStorage.getItem(key);
-    });
-
-    // Clear localStorage but preserve quest database
-    localStorage.clear();
-
-    // Restore quest database
-    keysToPreserve.forEach((key) => {
-      if (preservedValues[key]) {
-        localStorage.setItem(key, preservedValues[key]!);
+    // Prefer the cloud library; fall back to the local global library keys.
+    let questDatabase: any[] = Array.isArray(cloudQuestDatabase) ? cloudQuestDatabase : [];
+    if (questDatabase.length === 0) {
+      try {
+        questDatabase = JSON.parse(localStorage.getItem("monarch_quest_db_v1") || "[]");
+        if (!Array.isArray(questDatabase)) questDatabase = [];
+      } catch {
+        questDatabase = [];
       }
-    });
-
-    // Also save quest database under default keys
-    if (questDatabase.length > 0) {
-      localStorage.setItem("monarch_quest_db_v1", questDbJson);
     }
-    if (pressureDatabase.length > 0) {
-      localStorage.setItem("monarch_pressure_db_v1", pressureDbJson);
+    let pressureDatabase: any[] = Array.isArray(cloudPressure) ? cloudPressure : [];
+    if (pressureDatabase.length === 0) {
+      try {
+        pressureDatabase = JSON.parse(localStorage.getItem("monarch_pressure_db_v1") || "[]");
+        if (!Array.isArray(pressureDatabase)) pressureDatabase = [];
+      } catch {
+        pressureDatabase = [];
+      }
     }
 
-    // Step 5: Update Supabase profile with reset state
-    onProgress?.("Updating cloud profile...");
+    // Step 3: Reset player-owned cloud state FIRST (counter NOT consumed yet).
+    onProgress?.("Resetting player progression data...");
     const resetProfile = {
       player: null,
       attributes: [],
@@ -220,7 +217,7 @@ export async function performGameReset(
       updated_at: Date.now(),
     };
 
-    const { error: updateError } = await supabase
+    const { error: resetError } = await supabase
       .from("player_profiles")
       .upsert(
         {
@@ -231,16 +228,44 @@ export async function performGameReset(
         { onConflict: "id" }
       );
 
-    if (updateError) {
-      console.error("[GameReset] Failed to update cloud profile:", updateError);
-      return { success: false, error: "Cloud update failed. Please try again." };
+    if (resetError) {
+      console.error("[GameReset] Cloud profile reset failed:", resetError);
+      return { success: false, error: `Cloud reset failed: ${resetError.message || resetError}` };
     }
 
-    // Step 6: Clear the main data key
-    onProgress?.("Finalizing reset...");
-    localStorage.removeItem("monarch_logged_v10");
-    localStorage.removeItem("monarch_sync_updated_at");
+    // Step 4: Data reset succeeded — now consume one reset from the budget.
+    onProgress?.("Updating reset counter...");
+    try {
+      await incrementResetCount(userId);
+    } catch (countError: any) {
+      // Compensation: the data was reset but the counter could not be updated.
+      // Restore the previous profile so the user keeps BOTH their data and
+      // their reset budget, then report an honest failure.
+      console.error("[GameReset] Reset counter update failed — compensating:", countError);
+      onProgress?.("Counter update failed — restoring previous state...");
+      await supabase
+        .from("player_profiles")
+        .upsert(
+          {
+            id: userId,
+            profile_data: previousProfile || resetProfile,
+            updated_at: new Date().toISOString(),
+          },
+          { onConflict: "id" }
+        );
+      return {
+        success: false,
+        error: "Reset counter could not be updated. The reset was aborted and your previous state was restored.",
+      };
+    }
 
+    // Step 5: Purge player-owned local cache (Quest Database & settings are
+    // global keys and survive the purge by design). The live React state is
+    // reset by the caller via cloudSync.handlePostReset().
+    onProgress?.("Clearing local cache...");
+    purgePlayerScopedStorage();
+
+    onProgress?.("Reset complete.");
     return { success: true };
   } catch (e: any) {
     console.error("[GameReset] Reset failed:", e);

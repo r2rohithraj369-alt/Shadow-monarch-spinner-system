@@ -1,4 +1,9 @@
 import { getSupabase } from "./supabaseClient";
+import {
+  purgePlayerScopedStorage,
+  getLastUserId,
+  setLastUserId,
+} from "./playerStorage";
 import { Capacitor } from "@capacitor/core";
 import { App as CapApp } from "@capacitor/app";
 import { Browser as CapBrowser } from "@capacitor/browser";
@@ -31,6 +36,8 @@ export type SyncState = "idle" | "syncing" | "success" | "error" | "offline";
 class CloudSyncManager {
   private updateStateCallback: ((profile: UnifiedProfile) => void) | null = null;
   private syncStateCallback: ((state: SyncState, msg?: string) => void) | null = null;
+  private stateResetCallback: (() => void) | null = null;
+  private defaultProfileProvider: (() => UnifiedProfile) | null = null;
   
   private userSession: any = null;
   private isSyncing: boolean = false;
@@ -51,6 +58,24 @@ class CloudSyncManager {
    */
   public registerStateUpdater(callback: (profile: UnifiedProfile) => void) {
     this.updateStateCallback = callback;
+  }
+
+  /**
+   * Register a callback that resets ALL live player React state to the genuine
+   * starting state. Invoked on logout, account switch and after a full game
+   * reset so no previous player's data can survive in memory.
+   */
+  public registerStateReset(callback: () => void) {
+    this.stateResetCallback = callback;
+  }
+
+  /**
+   * Register a provider that builds the genuine NEW-PLAYER starting profile.
+   * Used when a freshly authenticated account has no cloud row yet — the
+   * previous player's local state is never used as the new player's state.
+   */
+  public registerDefaultProfileProvider(callback: () => UnifiedProfile) {
+    this.defaultProfileProvider = callback;
   }
 
   /**
@@ -97,9 +122,21 @@ class CloudSyncManager {
       if (session?.user) {
         await this.triggerInitialSync();
       } else if (event === "SIGNED_OUT") {
-        this.setSyncState("idle");
+        this.handleSignedOutCleanup();
       }
     });
+  }
+
+  /**
+   * Logout cleanup — clears every player-owned local key and resets live
+   * React state so User B can never inherit User A's state.
+   */
+  private handleSignedOutCleanup() {
+    console.log("[Auth] Signed out — purging player-scoped local cache and resetting live state.");
+    purgePlayerScopedStorage();
+    setLastUserId(null);
+    this.stateResetCallback?.();
+    this.setSyncState("idle");
   }
 
   private initNetworkListeners() {
@@ -202,6 +239,17 @@ class CloudSyncManager {
 
       const user = this.userSession.user;
 
+      // ACCOUNT ISOLATION GUARD — if the local cache belongs to a different
+      // authenticated user than the one now syncing, purge it BEFORE any
+      // hydration or conflict resolution. The previous player's state must
+      // never be read, compared, or uploaded for the new account.
+      if (getLastUserId() && getLastUserId() !== user.id) {
+        console.log("[Account Switch] Different authenticated user detected. Purging previous player's local cache.");
+        purgePlayerScopedStorage();
+        this.stateResetCallback?.();
+      }
+      setLastUserId(user.id);
+
       // 1. Download Cloud Profile
       const { data, error } = await supabase
         .from("player_profiles")
@@ -301,10 +349,23 @@ class CloudSyncManager {
           this.setSyncState("success", "Restored advanced levels from cloud.");
         }
       } else {
-        // First-time user profile initialization in Cloud
-        console.log("Initializing first-time cloud backup profile row.");
-        await this.uploadProfileToCloud(localProfile);
-        this.setSyncState("success", "Cloud profile verified and initialized successfully.");
+        // First-time user profile initialization in Cloud.
+        // ACCOUNT ISOLATION: a user with no cloud row is a NEW PLAYER. If the
+        // local cache belongs to this same user (e.g. their cloud row was
+        // removed), back it up. Otherwise initialize a genuine fresh starting
+        // profile — NEVER the previous player's leftover local state.
+        if (localProfile.player) {
+          console.log("No cloud row, but local data belongs to this user — restoring cloud backup from local.");
+          await this.uploadProfileToCloud(localProfile);
+        } else {
+          console.log("Initializing first-time cloud profile with a genuine new-player starting state.");
+          const freshProfile = this.defaultProfileProvider
+            ? this.defaultProfileProvider()
+            : localProfile;
+          await this.uploadProfileToCloud(freshProfile);
+          this.applyProfileToLocal(freshProfile);
+        }
+        this.setSyncState("success", "New player profile initialized successfully.");
       }
     } catch (e: any) {
       console.error("Cloud Sync Synchronization Error:", e);
@@ -662,8 +723,34 @@ class CloudSyncManager {
     }
     this.userSession = null;
     localStorage.removeItem("monarch_logged_v10");
-    localStorage.removeItem("monarch_sync_updated_at");
-    this.setSyncState("idle");
+    // Full player-scoped cleanup: every player-owned key is purged and live
+    // React state is reset, so the next login starts from a clean boundary.
+    this.handleSignedOutCleanup();
+  }
+
+  /**
+   * Called immediately after a successful Full Game Reset.
+   *
+   * 1. Purges every player-owned localStorage key (Quest Database preserved).
+   * 2. Resets ALL live React player state to the genuine starting state — the
+   *    user does NOT need to refresh the browser.
+   * 3. Blocks background uploads while the fresh state hydrates, so the old
+   *    (pre-reset) in-memory state can never be pushed back to the cloud.
+   * 4. Re-pulls the reset cloud profile.
+   */
+  public async handlePostReset() {
+    console.log("[Game Reset] Reinitializing live application state to a fresh start.");
+    this.isApplyingCloudData = true; // suppress uploads during the transition
+    purgePlayerScopedStorage();
+    this.stateResetCallback?.();
+    this.setSyncState("syncing", "Reinitializing fresh system state...");
+    try {
+      await this.triggerInitialSync();
+    } finally {
+      setTimeout(() => {
+        this.isApplyingCloudData = false;
+      }, 2500);
+    }
   }
 }
 

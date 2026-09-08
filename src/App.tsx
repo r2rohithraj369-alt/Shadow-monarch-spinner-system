@@ -1226,6 +1226,64 @@ export default function App() {
       if (profile.evolutionHistory) setEvolutionHistory(profile.evolutionHistory);
     });
 
+    // ACCOUNT ISOLATION + FULL GAME RESET — reset ALL live player state to the
+    // genuine starting state on logout, account switch, or full game reset so
+    // no previous player's data can survive in memory.
+    cloudSync.registerStateReset(() => {
+      setPlayer({ ...INITIAL_PLAYER });
+      setAttributes(AttributeEngine.ensureCompleteAttributes(INITIAL_ATTRIBUTES));
+      setSkills(INITIAL_SKILLS.map((s) => ({ ...s, history: [...s.history] })));
+      setDirectives(INITIAL_DIRECTIVES.map((d) => ({ ...d })));
+      setDungeons([]);
+      setLogs(INITIAL_LOGS.map((l) => ({ ...l })));
+      setEvolutionHistory([]);
+      setAiAnalysis(null);
+      setActiveQuestId("d1");
+      setPracticeQuests([]);
+      setActivePracticeQuestId(null);
+      setCompletedQuestIds([]);
+      setFailedQuestIds([]);
+      setRecentlyGeneratedIds([]);
+      const controlVal = INITIAL_ATTRIBUTES.find((a) => a.name === "Control")?.value || 0;
+      setAscensionState({
+        available: INITIAL_PLAYER.level >= 15 || controlVal >= 750,
+        currentTitleRequirement: "The Rookie Spinner",
+        nextTitleProposed: "The District Phantom",
+        attemptsLeft: 3,
+        challengeDescription: "Surpass the physical envelope of traditional rotation. Log a battle with 0 boundaries conceded or upgrade leg break to Level 15 to gain state-level status registration.",
+        completed: false,
+        failed: false,
+      });
+    });
+
+    // NEW PLAYER INITIALIZATION — builds the genuine starting profile used
+    // when a freshly authenticated account has no cloud row yet. The previous
+    // player's local state is never used. The permanent Quest Database /
+    // pressure library (GLOBAL data) is preserved.
+    cloudSync.registerDefaultProfileProvider(() => {
+      const localLibrary = cloudSync.getLocalProfileFromStorage();
+      return {
+        player: { ...INITIAL_PLAYER },
+        attributes: AttributeEngine.ensureCompleteAttributes(INITIAL_ATTRIBUTES),
+        skills: INITIAL_SKILLS.map((s) => ({ ...s, history: [...s.history] })),
+        directives: INITIAL_DIRECTIVES.map((d) => ({ ...d })),
+        dungeons: [],
+        logs: INITIAL_LOGS.map((l) => ({ ...l })),
+        aiAnalysis: null,
+        activeQuestId: "d1",
+        practiceQuests: [],
+        questDatabase: localLibrary.questDatabase || [],
+        pressureScenarios: localLibrary.pressureScenarios || [],
+        activePracticeQuestId: null,
+        completedQuestIds: [],
+        failedQuestIds: [],
+        recentlyGeneratedQuestIds: [],
+        questRotationSeed: null,
+        evolutionHistory: [],
+        updated_at: Date.now(),
+      };
+    });
+
     cloudSync.registerSyncStateListener((state: SyncState, msg?: string) => {
       setSyncState(state);
       if (msg) {
@@ -3534,9 +3592,11 @@ export default function App() {
                       }}
                       userId={cloudSync.getSession()?.user?.id || "local-player"}
                       onFullGameReset={() => {
-                        // Authoritative rehydration: after the cloud reset the
-                        // entire profile is rebuilt from the reset cloud state.
-                        window.location.reload();
+                        // Reinitialize the LIVE application state to the fresh
+                        // starting state (purge player cache, reset React
+                        // state, re-pull the reset cloud profile). No browser
+                        // refresh required.
+                        cloudSync.handlePostReset();
                       }}
                     />
                   )}

@@ -120,15 +120,25 @@ export default function SettingsPage({
     setResetError("");
 
     try {
-      await performGameReset(userId, (step: string) => {
+      const result = await performGameReset(userId, (step: string) => {
         setResetProgress(step);
       });
+
+      if (!result || result.success !== true) {
+        // Honest failure: do NOT show success, do NOT consume the reset.
+        setResetError(result?.error || "Reset failed. Your previous state was left intact.");
+        setResetStep("IDLE");
+        setResetPhraseInput("");
+        setResetConfirmInput("");
+        return;
+      }
+
       setResetStep("DONE");
-      setResetCount((prev) => prev + 1);
-      // Trigger the parent to reload state
+      setResetCount((prev) => Math.min(2, prev + 1));
+      // Reinitialize the live application state (no browser refresh needed).
       setTimeout(() => {
         onFullGameReset();
-      }, 2000);
+      }, 1500);
     } catch (err: any) {
       setResetError(err?.message || "Reset failed. Please try again.");
       setResetStep("IDLE");
@@ -1836,7 +1846,7 @@ export default function SettingsPage({
                     {resetStep === "DONE" && (
                       <div className="space-y-3">
                         <p className="text-xs text-green-400 font-sans">
-                          ✅ Reset complete! The application will reload momentarily.
+                          ✅ Reset complete! Your game state has been reinitialized to a fresh start.
                         </p>
                       </div>
                     )}

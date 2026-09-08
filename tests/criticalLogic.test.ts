@@ -190,6 +190,70 @@ console.log("\n=== RESET ===");
   assert("R8 canReset(3)=false (beyond limit)", canReset(3) === false);
 }
 
+console.log("\n=== ACCOUNT ISOLATION / PLAYER STORAGE ===");
+{
+  // Node has no localStorage — install a spec-compatible shim if absent.
+  const g = globalThis as any;
+  if (!g.localStorage || typeof g.localStorage.getItem !== "function") {
+    const map = new Map<string, string>();
+    g.localStorage = {
+      getItem: (k: string) => (map.has(k) ? map.get(k)! : null),
+      setItem: (k: string, v: string) => { map.set(k, String(v)); },
+      removeItem: (k: string) => { map.delete(k); },
+      clear: () => { map.clear(); },
+      key: (i: number) => Array.from(map.keys())[i] ?? null,
+      get length() { return map.size; },
+    };
+  }
+
+  const {
+    purgePlayerScopedStorage,
+    PLAYER_SCOPED_KEYS,
+    hasLocalPlayerData,
+    getLastUserId,
+    setLastUserId,
+    isLocalDataOwnedByDifferentUser,
+  } = await import("../src/utils/playerStorage");
+
+  // Seed state as if User A had been playing.
+  PLAYER_SCOPED_KEYS.forEach((k) => localStorage.setItem(k, JSON.stringify({ sample: k })));
+  localStorage.setItem("monarch_quest_db_v1", JSON.stringify([{ id: "q-lib-1", title: "LIBRARY QUEST" }]));
+  localStorage.setItem("monarch_nexus_settings_v1", JSON.stringify({ theme: "shadow-monarch" }));
+  setLastUserId("user-aaaa");
+
+  assert("I1 Local player data detected", hasLocalPlayerData() === true);
+  assert("I2 Stale ownership detected for User B", isLocalDataOwnedByDifferentUser("user-bbbb") === true);
+  assert("I3 Same ownership NOT flagged for User A", isLocalDataOwnedByDifferentUser("user-aaaa") === false);
+
+  purgePlayerScopedStorage();
+
+  const survived = PLAYER_SCOPED_KEYS.filter((k) => localStorage.getItem(k) !== null);
+  assert("I4 Purge removes ALL player-scoped keys (incl. evolution history)", survived.length === 0);
+  assert("I5 hasLocalPlayerData false after purge", hasLocalPlayerData() === false);
+
+  const questDb = JSON.parse(localStorage.getItem("monarch_quest_db_v1") || "[]");
+  assert("I6 Permanent Quest Database survives purge", Array.isArray(questDb) && questDb.length === 1 && questDb[0].id === "q-lib-1");
+  assert("I7 Global settings survive purge", localStorage.getItem("monarch_nexus_settings_v1") !== null);
+
+  assert("I8 No ownership marker -> not stale", (() => {
+    setLastUserId(null);
+    localStorage.setItem("monarch_player_v10", JSON.stringify({ level: 1 }));
+    const r = isLocalDataOwnedByDifferentUser("user-bbbb");
+    localStorage.removeItem("monarch_player_v10");
+    return r === false;
+  })());
+
+  assert("I9 Last-user marker round trip", (() => {
+    setLastUserId("user-cccc");
+    const v = getLastUserId();
+    setLastUserId(null);
+    return v === "user-cccc" && getLastUserId() === null;
+  })());
+
+  assert("I10 Evolution history key is player-scoped (cleared on reset)", PLAYER_SCOPED_KEYS.includes("monarch_evolution_history_v5"));
+  assert("I11 Quest Database key is NOT player-scoped (survives reset)", !PLAYER_SCOPED_KEYS.includes("monarch_quest_db_v1"));
+}
+
 console.log("\n=============================================");
 console.log(`RESULT: ${passed} passed, ${failed} failed`);
 if (failures.length > 0) {
