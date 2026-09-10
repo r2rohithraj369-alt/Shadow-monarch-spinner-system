@@ -43,6 +43,13 @@ class CloudSyncManager {
   private isSyncing: boolean = false;
   private uploadTimer: any = null;
   private isApplyingCloudData: boolean = false;
+  /**
+   * False until the FIRST triggerInitialSync for the current user completes.
+   * While false, queueCloudSync() is a no-op — the stale React state from a
+   * previous account (still in memory at boot) can never be uploaded into the
+   * new account's cloud row.
+   */
+  private bootHydrationDone: boolean = false;
   private readonly questDatabaseKey = "monarch_quest_db_v1";
   private readonly pressureDatabaseKey = "monarch_pressure_db_v1";
   private readonly settingsKey = "monarch_nexus_settings_v1";
@@ -133,6 +140,13 @@ class CloudSyncManager {
    */
   private handleSignedOutCleanup() {
     console.log("[Auth] Signed out — purging player-scoped local cache and resetting live state.");
+    // Cancel any pending debounced upload so the signed-out player's state can
+    // never be flushed to the cloud after logout.
+    if (this.uploadTimer) {
+      clearTimeout(this.uploadTimer);
+      this.uploadTimer = null;
+    }
+    this.bootHydrationDone = false;
     purgePlayerScopedStorage();
     setLastUserId(null);
     this.stateResetCallback?.();
@@ -216,23 +230,38 @@ class CloudSyncManager {
   }
 
   /**
-   * Safe comparison and restoration protocol on initial loading
+   * Safe comparison and restoration protocol on initial loading.
+   * `force` bypasses the isSyncing guard (used by handlePostReset, which must
+   * never be silently skipped).
+   *
+   * STALE-SESSION GUARD: every async boundary re-checks that the session user
+   * is still the user this sync was started for. Results from a previous
+   * account can never be applied to — or uploaded for — the current one.
    */
-  public async triggerInitialSync() {
+  public async triggerInitialSync(force: boolean = false) {
     const supabase = getSupabase();
     if (!supabase || !this.userSession?.user) {
       this.setSyncState("offline", "Login to activate Cloud Synchronization Sync");
       return;
     }
 
-    if (this.isSyncing) return;
+    if (this.isSyncing && !force) return;
     this.isSyncing = true;
-    
+
+    const syncUserId = this.userSession.user.id;
+    /** Abort when the authenticated user changed since this sync started. */
+    const sessionChanged = () => this.userSession?.user?.id !== syncUserId;
+
     const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
     try {
       this.setSyncState("syncing", "Comparing local & remote states...");
       await delay(120);
+
+      if (sessionChanged()) {
+        console.log(`[Sync] Aborted stale sync for ${syncUserId.slice(0, 8)}… — session user changed mid-flight.`);
+        return;
+      }
 
       this.setSyncState("syncing", "Restoring secure cloud session...");
       await delay(120);
@@ -245,8 +274,17 @@ class CloudSyncManager {
       // never be read, compared, or uploaded for the new account.
       if (getLastUserId() && getLastUserId() !== user.id) {
         console.log("[Account Switch] Different authenticated user detected. Purging previous player's local cache.");
-        purgePlayerScopedStorage();
+        const purgedKeys = purgePlayerScopedStorage();
+        console.log(`[ACCOUNT SWITCH][SYNC] previous=${getLastUserId()?.slice(0, 8)}… new=${user.id.slice(0, 8)}… purged=${purgedKeys.length} keys`);
         this.stateResetCallback?.();
+      } else if (!getLastUserId()) {
+        // No owner marker (legacy cache or pre-isolation build): treat as
+        // unowned and purge so it can never be compared/uploaded for this user.
+        if (this.getLocalProfileFromStorage().player) {
+          const purgedKeys = purgePlayerScopedStorage();
+          console.warn(`[ACCOUNT SWITCH][SYNC] Unowned local cache (no owner marker) purged for ${user.id.slice(0, 8)}… — ${purgedKeys.length} keys`);
+          this.stateResetCallback?.();
+        }
       }
       setLastUserId(user.id);
 
@@ -265,6 +303,13 @@ class CloudSyncManager {
           return;
         }
         throw error;
+      }
+
+      // Stale-session guard: the authenticated user must still be the same one
+      // this sync was started for before any state is read or written.
+      if (sessionChanged()) {
+        console.log(`[Sync] Aborted stale sync for ${syncUserId.slice(0, 8)}… after cloud fetch — session user changed.`);
+        return;
       }
 
       this.setSyncState("syncing", "Loading Player Profile...");
@@ -372,6 +417,11 @@ class CloudSyncManager {
       this.setSyncState("error", `Sync anomaly: ${e.message || e}`);
     } finally {
       this.isSyncing = false;
+      // First completed sync marks the app as hydrated for the current user.
+      // Until then, automatic uploads are blocked so the React state left over
+      // from a previous account/session can never be pushed to the new user's
+      // cloud row (the boot-upload poisoning bug).
+      this.bootHydrationDone = true;
     }
   }
 
@@ -607,6 +657,9 @@ class CloudSyncManager {
     const supabase = getSupabase();
     if (!supabase || !this.userSession?.user) return; // Running in local mode
     if (this.isApplyingCloudData) return; // Avoid echoing back retrieved cloud profiles!
+    if (!this.bootHydrationDone) return; // Boot gate: never upload pre-hydration (possibly previous-account) state
+
+    const scheduledUserId = this.userSession.user.id;
 
     if (this.uploadTimer) {
       clearTimeout(this.uploadTimer);
@@ -614,6 +667,13 @@ class CloudSyncManager {
 
     this.uploadTimer = setTimeout(async () => {
       try {
+        // STALE-SESSION GUARD: if the authenticated user changed between
+        // scheduling and firing, discard this upload — it belongs to the old
+        // account and must never be written to the new account's row.
+        if (this.userSession?.user?.id !== scheduledUserId) {
+          console.log(`[Sync] Discarded stale upload for ${scheduledUserId.slice(0, 8)}… — current user differs.`);
+          return;
+        }
         const payload: UnifiedProfile = {
           ...currentState,
           updated_at: Date.now()
@@ -745,7 +805,9 @@ class CloudSyncManager {
     this.stateResetCallback?.();
     this.setSyncState("syncing", "Reinitializing fresh system state...");
     try {
-      await this.triggerInitialSync();
+      // Force the re-pull: a concurrent sync must never cause the post-reset
+      // hydration to be silently skipped.
+      await this.triggerInitialSync(true);
     } finally {
       setTimeout(() => {
         this.isApplyingCloudData = false;

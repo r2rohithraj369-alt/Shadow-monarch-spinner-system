@@ -44,6 +44,7 @@ import QuestDatabase from "./components/QuestDatabase";
 import { QuestDatabaseManager } from "./utils/questDatabaseManager";
 import { cloudSync, UnifiedProfile, SyncState } from "./utils/cloudSyncManager";
 import { getSupabase } from "./utils/supabaseClient";
+import { resolveBootOwnership, setLastUserId, GUEST_USER_ID, purgePlayerScopedStorage } from "./utils/playerStorage";
 import CloudPortalAccess from "./components/CloudPortalAccess";
 import PlayerAvatar from "./components/PlayerAvatar";
 import appLogo from "./assets/images/app_logo_1782646701079.jpg";
@@ -1026,6 +1027,17 @@ export default function App() {
     setAudioState(audioManager.getSettings());
   };
 
+  // BOOT-TIME ACCOUNT ISOLATION GATE — MUST run before ANY player-state
+  // useState initializer reads localStorage. It synchronously purges any
+  // cached player data that does not belong to the currently persisted
+  // Supabase session (or to guest mode), so the first paint can never render
+  // a previous account's progression for the new account. Runs once per page
+  // load; later calls are no-ops.
+  const bootOwnership = resolveBootOwnership();
+  if (bootOwnership.purged) {
+    console.log("[HYDRATION] Player state initializers will use genuine defaults — unowned cache purged:", bootOwnership.reason);
+  }
+
   // STATE VARIABLES
   const [player, setPlayer] = useState<PlayerProfile>(() => {
     const saved = localStorage.getItem("monarch_player_v10");
@@ -1465,7 +1477,13 @@ export default function App() {
     audioManager.init();
     audioManager.playQuestLegendaryUnlocked();
     setIsGuest(true);
-    
+
+    // ACCOUNT ISOLATION: guest cache is ephemeral and owned by the synthetic
+    // GUEST_USER_ID. Any leftover logged-in player's cache must not leak into
+    // (or out of) guest mode. Global keys (Quest Database etc.) survive.
+    purgePlayerScopedStorage();
+    setLastUserId(GUEST_USER_ID);
+
     // reset all state variables to guest values
     setPlayer({
       name: "GUEST SPINNER",

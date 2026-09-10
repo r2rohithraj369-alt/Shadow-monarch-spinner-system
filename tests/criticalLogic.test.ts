@@ -254,6 +254,300 @@ console.log("\n=== ACCOUNT ISOLATION / PLAYER STORAGE ===");
   assert("I11 Quest Database key is NOT player-scoped (survives reset)", !PLAYER_SCOPED_KEYS.includes("monarch_quest_db_v1"));
 }
 
+console.log("\n=== BOOT-TIME OWNERSHIP GATE (FIRST-PAINT ISOLATION) ===");
+{
+  const {
+    resolveBootOwnership,
+    __resetBootOwnershipForTests,
+    setLastUserId,
+    getLastUserId,
+    hasLocalPlayerData,
+    GUEST_USER_ID,
+  } = await import("../src/utils/playerStorage");
+
+  const g = globalThis as any;
+  const seedCache = (owner: string | null) => {
+    (g.localStorage as any).clear();
+    localStorage.setItem("monarch_player_v10", JSON.stringify({ name: "SOMEONE", level: 5, xp: 2512 }));
+    localStorage.setItem("monarch_quest_db_v1", JSON.stringify([{ id: "q-lib-1" }]));
+    if (owner) setLastUserId(owner);
+  };
+  const seedSession = (userId: string | null) => {
+    if (userId) {
+      localStorage.setItem("sb-testproject-auth-token", JSON.stringify({ user: { id: userId } }));
+    } else {
+      localStorage.removeItem("sb-testproject-auth-token");
+    }
+  };
+
+  // Case 1: Account A cache + persisted session for Account B -> purge BEFORE paint.
+  __resetBootOwnershipForTests();
+  seedCache("user-aaaa");
+  seedSession("user-bbbb");
+  const r1 = resolveBootOwnership();
+  assert("B1 Stale Account A cache purged at boot when session is Account B", r1.purged === true && hasLocalPlayerData() === false);
+  assert("B2 Quest Database (global) survives boot purge", localStorage.getItem("monarch_quest_db_v1") !== null);
+  assert("B3 Ownership marker updated to Account B", getLastUserId() === "user-bbbb");
+
+  // Case 2: Same account reopens the app -> cache kept (fast local hydration).
+  __resetBootOwnershipForTests();
+  seedCache("user-bbbb");
+  seedSession("user-bbbb");
+  const r2 = resolveBootOwnership();
+  assert("B4 Same-account boot keeps owned cache", r2.purged === false && hasLocalPlayerData() === true);
+
+  // Case 3: Legacy cache with NO owner marker + session -> unowned -> purge.
+  __resetBootOwnershipForTests();
+  seedCache(null);
+  seedSession("user-aaaa");
+  const r3 = resolveBootOwnership();
+  assert("B5 Unowned (marker-less) cache purged when a session exists", r3.purged === true && hasLocalPlayerData() === false);
+
+  // Case 4: Guest boot must not inherit a signed-in user's cache.
+  __resetBootOwnershipForTests();
+  seedCache("user-aaaa");
+  seedSession(null);
+  const r4 = resolveBootOwnership();
+  assert("B6 Guest boot purges signed-in user's cache", r4.purged === true);
+  assert("B7 Guest boot marks cache as guest-owned", getLastUserId() === GUEST_USER_ID);
+
+  // Case 5: Logged-in session on a fresh device (no cache) -> marker claimed, no purge.
+  __resetBootOwnershipForTests();
+  (g.localStorage as any).clear();
+  seedSession("user-cccc");
+  const r5 = resolveBootOwnership();
+  assert("B8 Fresh device with session: no purge, marker claimed", r5.purged === false && getLastUserId() === "user-cccc");
+
+  // Case 6: once-per-page-load — a second call must never wipe live owner data.
+  __resetBootOwnershipForTests();
+  seedCache("user-aaaa");
+  seedSession("user-aaaa");
+  resolveBootOwnership();
+  localStorage.setItem("monarch_player_v10", JSON.stringify({ name: "USER A LIVE", level: 9 }));
+  const r6 = resolveBootOwnership(); // second call -> no-op
+  assert("B9 Second boot-resolution call is a no-op (live data safe)", r6.purged === false && JSON.parse(localStorage.getItem("monarch_player_v10") || "{}").level === 9);
+}
+
+console.log("\n=== RESET COUNTER (CLOUD-AUTHORITATIVE, PER-USER) ===");
+{
+  const {
+    getResetCountDetailed,
+    incrementResetCountWithClient,
+    performGameResetCore,
+  } = await import("../src/utils/gameResetManager");
+
+  const makeMockSupabase = (opts: {
+    resetRows?: Map<string, number>;
+    counterReadError?: any;
+    counterWriteError?: any;
+    profileRows?: Map<string, any>;
+  }) => {
+    const calls: any[] = [];
+    const o = {
+      calls,
+      resetRows: opts.resetRows ?? new Map<string, number>(),
+      counterReadError: opts.counterReadError,
+      counterWriteError: opts.counterWriteError,
+      profileRows: opts.profileRows ?? new Map<string, any>(),
+    };
+    return {
+      calls,
+      opts: o,
+      from(table: string) {
+        if (table === "game_resets") {
+          return {
+            select() {
+              return {
+                eq(_c: string, userId: string) {
+                  return {
+                    async maybeSingle() {
+                      calls.push({ op: "counter-read", table, userId });
+                      if (o.counterReadError) return { data: null, error: o.counterReadError };
+                      const count = o.resetRows.get(userId);
+                      return { data: count === undefined ? null : { reset_count: count }, error: null };
+                    },
+                  };
+                },
+              };
+            },
+            async upsert(row: any, options: any) {
+              calls.push({ op: "counter-write", table, row, options });
+              if (o.counterWriteError) return { error: o.counterWriteError };
+              o.resetRows.set(row.user_id, row.reset_count);
+              return { error: null };
+            },
+          };
+        }
+        return {
+          select() {
+            return {
+              eq(_c: string, id: string) {
+                return {
+                  async maybeSingle() {
+                    calls.push({ op: "profile-read", table, id });
+                    const p = o.profileRows.get(id);
+                    return { data: p === undefined ? null : { profile_data: p }, error: null };
+                  },
+                };
+              },
+            };
+          },
+          async upsert(row: any, options: any) {
+            calls.push({ op: "profile-write", table, row, options });
+            o.profileRows.set(row.id, row.profile_data);
+            return { error: null };
+          },
+        };
+      },
+    };
+  };
+
+  // 0 -> 1: first-time reset with NO row yet must create it.
+  {
+    const db = makeMockSupabase({});
+    const n = await incrementResetCountWithClient(db as any, "user-aaaa");
+    assert("R10 First reset creates counter row 0 -> 1", n === 1 && db.opts.resetRows.get("user-aaaa") === 1);
+  }
+  // 1 -> 2
+  {
+    const db = makeMockSupabase({ resetRows: new Map([["user-aaaa", 1]]) });
+    const n = await incrementResetCountWithClient(db as any, "user-aaaa");
+    assert("R11 Second reset increments 1 -> 2", n === 2 && db.opts.resetRows.get("user-aaaa") === 2);
+  }
+  // 2 -> blocked
+  {
+    const db = makeMockSupabase({ resetRows: new Map([["user-aaaa", 2]]) });
+    let blocked = false;
+    try {
+      await incrementResetCountWithClient(db as any, "user-aaaa");
+    } catch {
+      blocked = true;
+    }
+    assert("R12 Third reset is BLOCKED at 2/2", blocked && db.opts.resetRows.get("user-aaaa") === 2);
+  }
+  // User isolation of the counter
+  {
+    const db = makeMockSupabase({ resetRows: new Map([["user-aaaa", 1]]) });
+    await incrementResetCountWithClient(db as any, "user-bbbb");
+    assert("R13 Reset count is user-scoped: B's reset does not touch A", db.opts.resetRows.get("user-aaaa") === 1 && db.opts.resetRows.get("user-bbbb") === 1);
+  }
+  // Missing table -> exact honest classification (the LIVE production bug)
+  {
+    const db = makeMockSupabase({ counterReadError: { code: "PGRST205", message: "Could not find the table 'public.game_resets' in the schema cache" } });
+    const status = await getResetCountDetailed(db as any, "user-aaaa");
+    assert("R14 Missing game_resets table -> ok=false with TABLE_MISSING", status.ok === false && status.errorCode === "TABLE_MISSING");
+    assert("R15 TABLE_MISSING message names the migration file", (status.message || "").includes("20260908_player_isolation_and_reset.sql"));
+    const resetResult = await performGameResetCore(db as any, "user-aaaa");
+    assert("R16 Reset ABORTS (no data loss) when counter is unreadable", resetResult.success === false && (resetResult.error || "").includes("unavailable"));
+    assert("R17 No profile writes attempted when counter unreadable", !db.calls.some((c) => c.op === "profile-write"));
+  }
+  // RLS rejection on write -> honest failure + compensation
+  {
+    const previous = { player: { level: 5 }, progressed: true };
+    const db = makeMockSupabase({
+      counterWriteError: { code: "42501", message: "new row violates row-level security policy" },
+      profileRows: new Map([["user-aaaa", previous]]),
+    });
+    const resetResult = await performGameResetCore(db as any, "user-aaaa");
+    assert("R18 Counter write RLS failure -> honest failure (no false success)", resetResult.success === false && (resetResult.error || "").includes("aborted"));
+    assert("R19 Previous profile RESTORED after counter failure (compensation)", db.opts.profileRows.get("user-aaaa") === previous);
+  }
+}
+
+console.log("\n=== FULL GAME RESET FLOW (QUEST DB PRESERVED, STATE CLEARED) ===");
+{
+  const { performGameResetCore, buildResetProfile } = await import("../src/utils/gameResetManager");
+  const { PLAYER_SCOPED_KEYS } = await import("../src/utils/playerStorage");
+
+  const makeMockSupabase = (profileData: any, resetCount: number) => {
+    const rows = new Map<string, number>([["user-aaaa", resetCount]]);
+    const profiles = new Map<string, any>([["user-aaaa", profileData]]);
+    return {
+      opts: { resetRows: rows, profileRows: profiles },
+      from(table: string) {
+        if (table === "game_resets") {
+          return {
+            select() {
+              return {
+                eq(_c: string, userId: string) {
+                  return {
+                    async maybeSingle() {
+                      const count = rows.get(userId);
+                      return { data: count === undefined ? null : { reset_count: count }, error: null };
+                    },
+                  };
+                },
+              };
+            },
+            async upsert(row: any, _options: any) {
+              rows.set(row.user_id, row.reset_count);
+              return { error: null };
+            },
+          };
+        }
+        return {
+          select() {
+            return {
+              eq(_c: string, id: string) {
+                return {
+                  async maybeSingle() {
+                    const p = profiles.get(id);
+                    return { data: p === undefined ? null : { profile_data: p }, error: null };
+                  },
+                };
+              },
+            };
+          },
+          async upsert(row: any, _options: any) {
+            profiles.set(row.id, row.profile_data);
+            return { error: null };
+          },
+        };
+      },
+    };
+  };
+
+  // Seed localStorage: progressed player state + global quest library.
+  PLAYER_SCOPED_KEYS.forEach((k) => localStorage.setItem(k, "stale"));
+  localStorage.setItem("monarch_player_v10", JSON.stringify({ name: "A", level: 5, xp: 2512 }));
+  localStorage.setItem("monarch_quest_db_v1", JSON.stringify([{ id: "q-lib-1" }, { id: "q-lib-2" }]));
+
+  const progressedProfile = {
+    player: { name: "A", level: 5, xp: 2512 },
+    attributes: [{ name: "Control", value: 800 }],
+    skills: [{ id: "s1", level: 9 }],
+    practiceQuests: [{ id: "q1", completed: true }],
+    questDatabase: [{ id: "cloud-q" }],
+    completedQuestIds: ["q1"],
+    evolutionHistory: [{ ev: 1 }],
+  };
+
+  const db = makeMockSupabase(progressedProfile, 0);
+  const result = await performGameResetCore(db as any, "user-aaaa");
+  assert("F1 Full reset succeeds on a healthy cloud (0/2)", result.success === true);
+  assert("F2 Reset counter consumed: 0 -> 1", db.opts.resetRows.get("user-aaaa") === 1);
+
+  const resetCloudProfile = db.opts.profileRows.get("user-aaaa");
+  assert("F3 Player progression cleared in cloud (player null, attributes/skills empty)", resetCloudProfile.player === null && Array.isArray(resetCloudProfile.attributes) && resetCloudProfile.attributes.length === 0 && resetCloudProfile.skills.length === 0);
+  assert("F4 Quest progress / completed history / evolution cleared", Array.isArray(resetCloudProfile.practiceQuests) && resetCloudProfile.practiceQuests.length === 0 && resetCloudProfile.completedQuestIds.length === 0 && resetCloudProfile.evolutionHistory.length === 0);
+  assert("F5 GLOBAL Quest Database preserved through reset", resetCloudProfile.questDatabase.length === 1 && resetCloudProfile.questDatabase[0].id === "cloud-q");
+
+  assert("F6 Player-scoped localStorage purged after successful reset", PLAYER_SCOPED_KEYS.every((k) => localStorage.getItem(k) === null));
+  assert("F7 Global Quest Database key survives local purge", (JSON.parse(localStorage.getItem("monarch_quest_db_v1") || "[]") as any[]).length === 2);
+
+  // Second reset allowed (1 -> 2), third blocked.
+  const db2 = makeMockSupabase(progressedProfile, 1);
+  const result2 = await performGameResetCore(db2 as any, "user-aaaa");
+  const db3 = makeMockSupabase(progressedProfile, 2);
+  const result3 = await performGameResetCore(db3 as any, "user-aaaa");
+  assert("F8 Second reset allowed (1 -> 2)", result2.success === true && db2.opts.resetRows.get("user-aaaa") === 2);
+  assert("F9 Third reset BLOCKED at 2/2", result3.success === false && (result3.error || "").includes("Maximum resets"));
+
+  // buildResetProfile: falls back to the local global library when cloud has none.
+  const built = buildResetProfile(null, [{ id: "local-q" }], []);
+  assert("F10 Reset profile falls back to local Quest Database when cloud has none", built.questDatabase.length === 1 && built.questDatabase[0].id === "local-q" && built.player === null);
+}
+
 console.log("\n=============================================");
 console.log(`RESULT: ${passed} passed, ${failed} failed`);
 if (failures.length > 0) {

@@ -1,7 +1,18 @@
 -- ============================================================================
 -- MONARCH SPINNER SYSTEM — PLAYER ISOLATION & FULL GAME RESET SCHEMA
 -- ============================================================================
--- Run this in the Supabase SQL editor (or as a migration).
+-- *** THIS FILE MUST BE EXECUTED AGAINST THE LIVE SUPABASE PROJECT ***
+--
+-- A migration file existing in GitHub does NOT change the live database.
+-- Deployment (verified 2026-09-10): this migration had NOT been executed —
+-- PostgREST returned PGRST205 "Could not find the table 'public.game_resets'"
+-- which is the exact cause of the "Reset counter could not be updated" error.
+--
+-- HOW TO DEPLOY:
+--   1. Open https://supabase.com/dashboard -> your project -> SQL Editor.
+--   2. Paste the ENTIRE content of this file and click RUN.
+--   3. Verify with the verification queries at the bottom, or reload the app
+--      — the Settings -> Full Game Reset screen will show 0/2 (not "N/A").
 --
 -- Purpose:
 --   1. `game_resets`  — cloud-authoritative per-user Full Game Reset counter
@@ -38,6 +49,11 @@ create policy "users_insert_own_reset_count" on public.game_resets
 
 create policy "users_update_own_reset_count" on public.game_resets
   for update using (auth.uid() = user_id) with check (auth.uid() = user_id);
+
+-- Explicit grants (harmless if defaults already cover these roles; required if
+-- the project has altered default privileges for the public schema).
+grant select, insert, update on public.game_resets to anon, authenticated;
+grant select, insert, update on public.player_profiles to anon, authenticated;
 
 -- ----------------------------------------------------------------------------
 -- 2. PLAYER PROFILES (single per-user row: id == auth.uid())

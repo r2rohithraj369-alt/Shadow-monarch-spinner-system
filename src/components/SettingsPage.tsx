@@ -8,7 +8,8 @@ import {
 } from "lucide-react";
 import { AppSettings, BUILT_IN_THEMES, BACKGROUNDS, SettingsManager, ThemePreset } from "../utils/settingsManager";
 import { playSystemClick, playSystemDing, playPortalSwoosh } from "../utils/audio";
-import { validateResetPhrase, validateConfirmationPhrase, getResetCount, canReset, performGameReset, ResetProgress } from "../utils/gameResetManager";
+import { validateResetPhrase, validateConfirmationPhrase, getResetCountDetailed, canReset, performGameReset, ResetProgress } from "../utils/gameResetManager";
+import { getSupabase } from "../utils/supabaseClient";
 
 interface SettingsPageProps {
   settings: AppSettings;
@@ -56,6 +57,10 @@ export default function SettingsPage({
   const [resetPhraseInput, setResetPhraseInput] = useState("");
   const [resetConfirmInput, setResetConfirmInput] = useState("");
   const [resetCount, setResetCount] = useState<number>(0);
+  // Honest counter status: when the cloud counter cannot be read, the UI must
+  // NOT display a misleading "0/2" — it must show the actual failure reason.
+  const [resetCountStatus, setResetCountStatus] = useState<"OK" | "UNAVAILABLE" | "LOADING">("LOADING");
+  const [resetCountError, setResetCountError] = useState<string>("");
   const [resetProgress, setResetProgress] = useState<string>("");
   const [resetError, setResetError] = useState<string>("");
   const [isResetting, setIsResetting] = useState(false);
@@ -86,10 +91,17 @@ export default function SettingsPage({
   // Load reset count on mount and when GAME_RESET tab is selected
   useEffect(() => {
     if (activeSubTab === "GAME_RESET") {
-      getResetCount(userId).then((count) => {
-        setResetCount(count);
-      }).catch(() => {
-        setResetCount(0);
+      setResetCountStatus("LOADING");
+      getResetCountDetailed(getSupabase(), userId).then((status) => {
+        setResetCount(status.count);
+        if (status.ok) {
+          setResetCountStatus("OK");
+          setResetCountError("");
+        } else {
+          setResetCountStatus("UNAVAILABLE");
+          setResetCountError(status.message || "Reset counter could not be read from the cloud.");
+          console.error(`[RESET][UI] Counter unavailable for user ${userId.slice(0, 8)}… code=${status.errorCode}: ${status.message}`);
+        }
       });
     }
   }, [activeSubTab, userId]);
@@ -115,6 +127,13 @@ export default function SettingsPage({
       return;
     }
 
+    if (resetCountStatus === "UNAVAILABLE") {
+      // Honest blocking: never attempt a reset whose counter cannot be
+      // verified — it would fail (and roll back) at the counter stage anyway.
+      setResetError(`Reset system unavailable: ${resetCountError}`);
+      return;
+    }
+
     setIsResetting(true);
     setResetStep("PROCESSING");
     setResetError("");
@@ -134,7 +153,15 @@ export default function SettingsPage({
       }
 
       setResetStep("DONE");
-      setResetCount((prev) => Math.min(2, prev + 1));
+      // Re-read the CLOUD-authoritative count (never trust the optimistic +1).
+      getResetCountDetailed(getSupabase(), userId).then((status) => {
+        if (status.ok) {
+          setResetCount(status.count);
+          setResetCountStatus("OK");
+        } else {
+          setResetCount((prev) => Math.min(2, prev + 1));
+        }
+      });
       // Reinitialize the live application state (no browser refresh needed).
       setTimeout(() => {
         onFullGameReset();
@@ -1750,10 +1777,22 @@ export default function SettingsPage({
                 <div className="bg-[#030303] border border-gray-900 rounded-2xl p-6">
                   <div className="flex items-center justify-between mb-4">
                     <span className="text-[10px] text-gray-500 font-bold uppercase tracking-wider">Reset Usage</span>
-                    <span className={`text-sm font-black ${resetCount >= 2 ? "text-red-400" : "text-cyan-400"}`}>
-                      {resetCount}/2
-                    </span>
+                    {resetCountStatus === "UNAVAILABLE" ? (
+                      <span className="text-sm font-black text-red-400">N/A</span>
+                    ) : (
+                      <span className={`text-sm font-black ${resetCount >= 2 ? "text-red-400" : "text-cyan-400"}`}>
+                        {resetCount}/2
+                      </span>
+                    )}
                   </div>
+                  {resetCountStatus === "UNAVAILABLE" && (
+                    <p className="text-xs text-red-400 font-sans leading-relaxed mb-3">
+                      <AlertTriangle className="w-3 h-3 inline mr-1" />
+                      The cloud reset counter could not be read. {resetCountError}
+                      <br />
+                      Reset is disabled until the database is repaired.
+                    </p>
+                  )}
                   <div className="w-full bg-gray-900 rounded-full h-3 overflow-hidden">
                     <div 
                       className={`h-full rounded-full transition-all duration-500 ${resetCount >= 2 ? "bg-red-500" : "bg-cyan-500"}`}
