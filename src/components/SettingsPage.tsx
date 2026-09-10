@@ -8,7 +8,7 @@ import {
 } from "lucide-react";
 import { AppSettings, BUILT_IN_THEMES, BACKGROUNDS, SettingsManager, ThemePreset } from "../utils/settingsManager";
 import { playSystemClick, playSystemDing, playPortalSwoosh } from "../utils/audio";
-import { validateResetPhrase, validateConfirmationPhrase, getResetCountDetailed, canReset, performGameReset, ResetProgress } from "../utils/gameResetManager";
+import { validateResetPhrase, validateConfirmationPhrase, getResetCountDetailed, canReset, performGameReset, ResetProgress, MAX_FULL_GAME_RESETS } from "../utils/gameResetManager";
 import { getSupabase } from "../utils/supabaseClient";
 
 interface SettingsPageProps {
@@ -58,7 +58,7 @@ export default function SettingsPage({
   const [resetConfirmInput, setResetConfirmInput] = useState("");
   const [resetCount, setResetCount] = useState<number>(0);
   // Honest counter status: when the cloud counter cannot be read, the UI must
-  // NOT display a misleading "0/2" — it must show the actual failure reason.
+  // NOT display a misleading "0/5" — it must show the actual failure reason.
   const [resetCountStatus, setResetCountStatus] = useState<"OK" | "UNAVAILABLE" | "LOADING">("LOADING");
   const [resetCountError, setResetCountError] = useState<string>("");
   const [resetProgress, setResetProgress] = useState<string>("");
@@ -123,7 +123,7 @@ export default function SettingsPage({
     }
 
     if (!canReset(resetCount)) {
-      setResetError("Maximum number of resets (2/2) has been reached.");
+      setResetError(`Maximum number of resets (${MAX_FULL_GAME_RESETS}/${MAX_FULL_GAME_RESETS}) has been reached.`);
       return;
     }
 
@@ -159,7 +159,7 @@ export default function SettingsPage({
           setResetCount(status.count);
           setResetCountStatus("OK");
         } else {
-          setResetCount((prev) => Math.min(2, prev + 1));
+          setResetCount((prev) => Math.min(MAX_FULL_GAME_RESETS, prev + 1));
         }
       });
       // Reinitialize the live application state (no browser refresh needed).
@@ -1780,8 +1780,8 @@ export default function SettingsPage({
                     {resetCountStatus === "UNAVAILABLE" ? (
                       <span className="text-sm font-black text-red-400">N/A</span>
                     ) : (
-                      <span className={`text-sm font-black ${resetCount >= 2 ? "text-red-400" : "text-cyan-400"}`}>
-                        {resetCount}/2
+                      <span className={`text-sm font-black ${resetCount >= MAX_FULL_GAME_RESETS ? "text-red-400" : "text-cyan-400"}`}>
+                        {resetCount}/{MAX_FULL_GAME_RESETS}
                       </span>
                     )}
                   </div>
@@ -1795,11 +1795,11 @@ export default function SettingsPage({
                   )}
                   <div className="w-full bg-gray-900 rounded-full h-3 overflow-hidden">
                     <div 
-                      className={`h-full rounded-full transition-all duration-500 ${resetCount >= 2 ? "bg-red-500" : "bg-cyan-500"}`}
-                      style={{ width: `${(resetCount / 2) * 100}%` }}
+                      className={`h-full rounded-full transition-all duration-500 ${resetCount >= MAX_FULL_GAME_RESETS ? "bg-red-500" : "bg-cyan-500"}`}
+                      style={{ width: `${(resetCount / MAX_FULL_GAME_RESETS) * 100}%` }}
                     />
                   </div>
-                  {resetCount >= 2 && (
+                  {resetCount >= MAX_FULL_GAME_RESETS && (
                     <p className="text-xs text-red-400 font-sans mt-2">
                       <Lock className="w-3 h-3 inline mr-1" />
                       Maximum resets reached. This feature is permanently disabled.
@@ -1808,7 +1808,7 @@ export default function SettingsPage({
                 </div>
 
                 {/* RESET STEPS */}
-                {resetCount < 2 && (
+                {resetCount < MAX_FULL_GAME_RESETS && (
                   <div className="bg-[#030303] border border-gray-900 rounded-2xl p-6 space-y-4">
                     <span className="text-[10px] text-gray-500 font-bold uppercase tracking-wider block">Reset Process</span>
 

@@ -223,8 +223,13 @@ export class AttributeEngine {
   }
 
   static createInitialAttributes(): Attribute[] {
-    return ATTRIBUTE_IDENTITIES.map((identity, index) => {
-      const value = identity.name === "Arcane Mastery" ? 4 : Math.max(1, 12 - index);
+    // ATTRIBUTE STARTING VALUES ARE ALL ZERO.
+    // NEVER derive an attribute's numeric value from the array index — the
+    // previous "Math.max(1, 12 - index)" formula made every fresh/reset
+    // profile display a descending 12,11,10…0 sequence (the index leaked in
+    // as the value) instead of genuine zero starting attributes.
+    return ATTRIBUTE_IDENTITIES.map((identity) => {
+      const value = 0;
       return {
         name: identity.name,
         value,
@@ -250,7 +255,9 @@ export class AttributeEngine {
     const byName = new Map(attributes.map((attr) => [attr.name.toUpperCase(), attr]));
     return ATTRIBUTE_IDENTITIES.map((identity) => {
       const existing = byName.get(identity.name.toUpperCase());
-      const value = existing ? clamp(Number(existing.value || 0)) : (identity.name === "Arcane Mastery" ? 4 : 1);
+      // Missing attributes (empty/legacy arrays) hydrate to the genuine
+      // starting value 0 — never an index-derived or invented default.
+      const value = existing ? clamp(Number(existing.value || 0)) : 0;
       return {
         ...existing,
         name: identity.name,

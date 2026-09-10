@@ -1,5 +1,6 @@
 import { getSupabase } from "./supabaseClient";
 import { purgePlayerScopedStorage } from "./playerStorage";
+import { AttributeEngine } from "./attributeEngine";
 
 /**
  * Game Reset Manager
@@ -8,7 +9,9 @@ import { purgePlayerScopedStorage } from "./playerStorage";
  * The reset count is stored in Supabase and cannot be bypassed by clearing localStorage.
  */
 
-const MAX_RESETS = 2;
+/** Lifetime Full Game Reset allowance per account (cloud-authoritative). */
+export const MAX_FULL_GAME_RESETS = 5;
+const MAX_RESETS = MAX_FULL_GAME_RESETS; // internal alias — one authoritative maximum
 const RESET_TABLE = "game_resets";
 
 /** Progress reporter invoked during a full game reset. */
@@ -32,7 +35,7 @@ export interface SupabaseQueryClient {
 }
 
 /**
- * Synchronous reset-eligibility check (0/2 -> allowed, 2/2 -> disabled).
+ * Synchronous reset-eligibility check (0/5 -> allowed, 5/5 -> disabled).
  * The authoritative cloud count is checked again inside performGameReset.
  */
 export function canReset(count: number): boolean {
@@ -62,7 +65,8 @@ function classifyCounterError(error: any): { code: string; message: string } {
       code: "TABLE_MISSING",
       message:
         "The 'game_resets' table does not exist in the live Supabase database. " +
-        "Run supabase/migrations/20260908_player_isolation_and_reset.sql in the Supabase SQL Editor.",
+        "Run supabase/migrations/20260908_player_isolation_and_reset.sql then " +
+        "supabase/migrations/20260910_full_game_reset_limit_5.sql in the Supabase SQL Editor.",
     };
   }
   if (code === "42501" || /row-level security/i.test(raw)) {
@@ -243,7 +247,10 @@ export function buildResetProfile(
 
   return {
     player: null,
-    attributes: [],
+    // Persist the GENUINE starting attributes: every attribute present with
+    // value 0 (identity/order preserved from ATTRIBUTE_IDENTITIES). Never an
+    // empty array (which relied on hydration fallbacks) and never index-derived.
+    attributes: AttributeEngine.createInitialAttributes(),
     skills: [],
     directives: [],
     dungeons: [],

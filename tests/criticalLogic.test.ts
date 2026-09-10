@@ -16,6 +16,7 @@ import {
   validateResetPhrase,
   validateConfirmationPhrase,
   canReset,
+  MAX_FULL_GAME_RESETS,
 } from "../src/utils/gameResetManager";
 import { getRankRequirements, RANK_REQUIREMENTS_LIST } from "../src/utils/rankRequirements";
 import { PracticeQuest } from "../src/types";
@@ -184,10 +185,14 @@ console.log("\n=== RESET ===");
   assert("R2 Case-sensitive: 'arise' rejected", validateResetPhrase("arise") === false);
   assert("R3 CONFIRM RESET accepted", validateConfirmationPhrase("CONFIRM RESET") === true);
   assert("R4 Wrong confirmation rejected", validateConfirmationPhrase("confirm reset") === false);
-  assert("R5 canReset(0)=true (0/2)", canReset(0) === true);
-  assert("R6 canReset(1)=true (1/2)", canReset(1) === true);
-  assert("R7 canReset(2)=false (2/2 permanently disabled)", canReset(2) === false);
-  assert("R8 canReset(3)=false (beyond limit)", canReset(3) === false);
+  assert("R5 Authoritative maximum is 5", MAX_FULL_GAME_RESETS === 5);
+  assert("R6 canReset(0)=true (0/5)", canReset(0) === true);
+  assert("R7 canReset(1)=true (1/5)", canReset(1) === true);
+  assert("R8 canReset(2)=true (2/5)", canReset(2) === true);
+  assert("R9 canReset(3)=true (3/5)", canReset(3) === true);
+  assert("R10 canReset(4)=true (4/5)", canReset(4) === true);
+  assert("R11 canReset(5)=false (5/5 permanently disabled)", canReset(5) === false);
+  assert("R12 canReset(6)=false (beyond limit)", canReset(6) === false);
 }
 
 console.log("\n=== ACCOUNT ISOLATION / PLAYER STORAGE ===");
@@ -406,42 +411,47 @@ console.log("\n=== RESET COUNTER (CLOUD-AUTHORITATIVE, PER-USER) ===");
   {
     const db = makeMockSupabase({});
     const n = await incrementResetCountWithClient(db as any, "user-aaaa");
-    assert("R10 First reset creates counter row 0 -> 1", n === 1 && db.opts.resetRows.get("user-aaaa") === 1);
+    assert("RC1 First reset creates counter row 0 -> 1", n === 1 && db.opts.resetRows.get("user-aaaa") === 1);
   }
-  // 1 -> 2
+  // 1 -> 2 -> ... -> 5 each allowed
   {
-    const db = makeMockSupabase({ resetRows: new Map([["user-aaaa", 1]]) });
-    const n = await incrementResetCountWithClient(db as any, "user-aaaa");
-    assert("R11 Second reset increments 1 -> 2", n === 2 && db.opts.resetRows.get("user-aaaa") === 2);
+    const db = makeMockSupabase({ resetRows: new Map([["user-aaaa", 0]]) });
+    let allAllowed = true;
+    for (let expected = 1; expected <= 5; expected++) {
+      const n = await incrementResetCountWithClient(db as any, "user-aaaa");
+      if (n !== expected || db.opts.resetRows.get("user-aaaa") !== expected) allAllowed = false;
+    }
+    assert("RC2 Resets 1..5 all allowed and increment exactly once each", allAllowed);
   }
-  // 2 -> blocked
+  // 5 -> blocked, count can NEVER become 6
   {
-    const db = makeMockSupabase({ resetRows: new Map([["user-aaaa", 2]]) });
+    const db = makeMockSupabase({ resetRows: new Map([["user-aaaa", 5]]) });
     let blocked = false;
     try {
       await incrementResetCountWithClient(db as any, "user-aaaa");
     } catch {
       blocked = true;
     }
-    assert("R12 Third reset is BLOCKED at 2/2", blocked && db.opts.resetRows.get("user-aaaa") === 2);
+    assert("RC3 Sixth reset BLOCKED at 5/5", blocked);
+    assert("RC4 Count can never exceed 5 (no write attempted at limit)", db.opts.resetRows.get("user-aaaa") === 5 && !db.calls.some((c) => c.op === "counter-write"));
   }
   // User isolation of the counter
   {
     const db = makeMockSupabase({ resetRows: new Map([["user-aaaa", 1]]) });
     await incrementResetCountWithClient(db as any, "user-bbbb");
-    assert("R13 Reset count is user-scoped: B's reset does not touch A", db.opts.resetRows.get("user-aaaa") === 1 && db.opts.resetRows.get("user-bbbb") === 1);
+    assert("RC5 Reset count is user-scoped: B's reset does not touch A", db.opts.resetRows.get("user-aaaa") === 1 && db.opts.resetRows.get("user-bbbb") === 1);
   }
   // Missing table -> exact honest classification (the LIVE production bug)
   {
     const db = makeMockSupabase({ counterReadError: { code: "PGRST205", message: "Could not find the table 'public.game_resets' in the schema cache" } });
     const status = await getResetCountDetailed(db as any, "user-aaaa");
-    assert("R14 Missing game_resets table -> ok=false with TABLE_MISSING", status.ok === false && status.errorCode === "TABLE_MISSING");
-    assert("R15 TABLE_MISSING message names the migration file", (status.message || "").includes("20260908_player_isolation_and_reset.sql"));
+    assert("RC6 Missing game_resets table -> ok=false with TABLE_MISSING", status.ok === false && status.errorCode === "TABLE_MISSING");
+    assert("RC7 TABLE_MISSING message names the migration file", (status.message || "").includes("20260908_player_isolation_and_reset.sql"));
     const resetResult = await performGameResetCore(db as any, "user-aaaa");
-    assert("R16 Reset ABORTS (no data loss) when counter is unreadable", resetResult.success === false && (resetResult.error || "").includes("unavailable"));
-    assert("R17 No profile writes attempted when counter unreadable", !db.calls.some((c) => c.op === "profile-write"));
+    assert("RC8 Reset ABORTS (no data loss) when counter is unreadable", resetResult.success === false && (resetResult.error || "").includes("unavailable"));
+    assert("RC9 No profile writes attempted when counter unreadable", !db.calls.some((c) => c.op === "profile-write"));
   }
-  // RLS rejection on write -> honest failure + compensation
+  // RLS rejection on write -> honest failure + compensation + no increment
   {
     const previous = { player: { level: 5 }, progressed: true };
     const db = makeMockSupabase({
@@ -449,8 +459,9 @@ console.log("\n=== RESET COUNTER (CLOUD-AUTHORITATIVE, PER-USER) ===");
       profileRows: new Map([["user-aaaa", previous]]),
     });
     const resetResult = await performGameResetCore(db as any, "user-aaaa");
-    assert("R18 Counter write RLS failure -> honest failure (no false success)", resetResult.success === false && (resetResult.error || "").includes("aborted"));
-    assert("R19 Previous profile RESTORED after counter failure (compensation)", db.opts.profileRows.get("user-aaaa") === previous);
+    assert("RC10 Counter write RLS failure -> honest failure (no false success)", resetResult.success === false && (resetResult.error || "").includes("aborted"));
+    assert("RC11 Previous profile RESTORED after counter failure (compensation)", db.opts.profileRows.get("user-aaaa") === previous);
+    assert("RC12 FAILED reset does NOT increment the counter", db.opts.resetRows.get("user-aaaa") === undefined);
   }
 }
 
@@ -458,6 +469,7 @@ console.log("\n=== FULL GAME RESET FLOW (QUEST DB PRESERVED, STATE CLEARED) ==="
 {
   const { performGameResetCore, buildResetProfile } = await import("../src/utils/gameResetManager");
   const { PLAYER_SCOPED_KEYS } = await import("../src/utils/playerStorage");
+  const { AttributeEngine, ATTRIBUTE_IDENTITIES } = await import("../src/utils/attributeEngine");
 
   const makeMockSupabase = (profileData: any, resetCount: number) => {
     const rows = new Map<string, number>([["user-aaaa", resetCount]]);
@@ -528,24 +540,70 @@ console.log("\n=== FULL GAME RESET FLOW (QUEST DB PRESERVED, STATE CLEARED) ==="
   assert("F2 Reset counter consumed: 0 -> 1", db.opts.resetRows.get("user-aaaa") === 1);
 
   const resetCloudProfile = db.opts.profileRows.get("user-aaaa");
-  assert("F3 Player progression cleared in cloud (player null, attributes/skills empty)", resetCloudProfile.player === null && Array.isArray(resetCloudProfile.attributes) && resetCloudProfile.attributes.length === 0 && resetCloudProfile.skills.length === 0);
+  assert("F3 Player progression cleared in cloud (player null, skills empty, attributes all zero)", resetCloudProfile.player === null && Array.isArray(resetCloudProfile.attributes) && resetCloudProfile.attributes.length === ATTRIBUTE_IDENTITIES.length && resetCloudProfile.attributes.every((a: any) => a.value === 0) && resetCloudProfile.skills.length === 0);
   assert("F4 Quest progress / completed history / evolution cleared", Array.isArray(resetCloudProfile.practiceQuests) && resetCloudProfile.practiceQuests.length === 0 && resetCloudProfile.completedQuestIds.length === 0 && resetCloudProfile.evolutionHistory.length === 0);
   assert("F5 GLOBAL Quest Database preserved through reset", resetCloudProfile.questDatabase.length === 1 && resetCloudProfile.questDatabase[0].id === "cloud-q");
 
   assert("F6 Player-scoped localStorage purged after successful reset", PLAYER_SCOPED_KEYS.every((k) => localStorage.getItem(k) === null));
   assert("F7 Global Quest Database key survives local purge", (JSON.parse(localStorage.getItem("monarch_quest_db_v1") || "[]") as any[]).length === 2);
 
-  // Second reset allowed (1 -> 2), third blocked.
-  const db2 = makeMockSupabase(progressedProfile, 1);
+  // Fifth reset allowed (4 -> 5), sixth blocked at 5/5.
+  const db2 = makeMockSupabase(progressedProfile, 4);
   const result2 = await performGameResetCore(db2 as any, "user-aaaa");
-  const db3 = makeMockSupabase(progressedProfile, 2);
+  const db3 = makeMockSupabase(progressedProfile, 5);
   const result3 = await performGameResetCore(db3 as any, "user-aaaa");
-  assert("F8 Second reset allowed (1 -> 2)", result2.success === true && db2.opts.resetRows.get("user-aaaa") === 2);
-  assert("F9 Third reset BLOCKED at 2/2", result3.success === false && (result3.error || "").includes("Maximum resets"));
+  assert("F8 Fifth reset allowed (4 -> 5)", result2.success === true && db2.opts.resetRows.get("user-aaaa") === 5);
+  assert("F9 Sixth reset BLOCKED at 5/5 (permanently locked)", result3.success === false && (result3.error || "").includes("Maximum resets"));
 
   // buildResetProfile: falls back to the local global library when cloud has none.
   const built = buildResetProfile(null, [{ id: "local-q" }], []);
   assert("F10 Reset profile falls back to local Quest Database when cloud has none", built.questDatabase.length === 1 && built.questDatabase[0].id === "local-q" && built.player === null);
+
+  // ATTRIBUTE RESET: the persisted cloud reset profile must carry the genuine
+  // zeroed starting attributes (correct identity + order, value 0), and
+  // re-hydration through ensureCompleteAttributes must keep them at 0 —
+  // the descending 12..0 index pattern can never come back.
+  const persisted = db.opts.profileRows.get("user-aaaa");
+  const persistedAttrs = persisted.attributes as any[];
+  assert("F11 Reset profile persists every attribute with value 0", Array.isArray(persistedAttrs) && persistedAttrs.length === ATTRIBUTE_IDENTITIES.length && persistedAttrs.every((a: any) => a.value === 0));
+  assert("F12 Attribute identities/order preserved in reset profile", persistedAttrs.every((a: any, i: number) => a.name === ATTRIBUTE_IDENTITIES[i].name));
+  const rehydrated = AttributeEngine.ensureCompleteAttributes(persistedAttrs);
+  assert("F13 Cloud hydration of reset profile keeps ALL attributes at 0 (no 12..0 resurrection)", rehydrated.every((a: any) => a.value === 0) && rehydrated.length === ATTRIBUTE_IDENTITIES.length);
+
+  // ACCOUNT ISOLATION: resetting user B must not touch user A's cloud profile.
+  const dbIso = makeMockSupabase(progressedProfile, 0);
+  dbIso.opts.profileRows.set("user-bbbb", { player: { name: "B" } });
+  await performGameResetCore(dbIso as any, "user-bbbb");
+  assert("F14 Reset for user B leaves user A's profile untouched", JSON.stringify(dbIso.opts.profileRows.get("user-aaaa")) === JSON.stringify(progressedProfile));
+  assert("F15 User B receives a genuine reset (zeroed attributes), not A's data", (dbIso.opts.profileRows.get("user-bbbb").attributes as any[]).every((a: any) => a.value === 0));
+}
+
+console.log("\n=== ATTRIBUTE ENGINE (ZERO START, NO INDEX-AS-VALUE) ===");
+{
+  const { AttributeEngine, ATTRIBUTE_IDENTITIES } = await import("../src/utils/attributeEngine");
+  const { buildResetProfile } = await import("../src/utils/gameResetManager");
+
+  const initial = AttributeEngine.createInitialAttributes();
+  assert("A1 Initial attributes: every value is exactly 0", initial.every((a) => a.value === 0));
+  assert("A2 All attribute identities present (13 attributes + Arcane Mastery average)", initial.length === ATTRIBUTE_IDENTITIES.length && ATTRIBUTE_IDENTITIES.length === 14);
+  assert("A3 Attribute names/order match the canonical definitions", initial.every((a, i) => a.name === ATTRIBUTE_IDENTITIES[i].name));
+  assert("A4 No index-derived values (never 12,11,10..0 pattern)", !initial.some((a) => a.value !== 0));
+
+  // Hydration of an EMPTY attribute array (reset/legacy profile) -> all zeros.
+  const hydratedEmpty = AttributeEngine.ensureCompleteAttributes([]);
+  assert("A5 ensureCompleteAttributes([]) yields all-zero starting attributes", hydratedEmpty.length === ATTRIBUTE_IDENTITIES.length && hydratedEmpty.every((a) => a.value === 0));
+
+  // REGRESSION GUARD: hydration must NEVER zero out real progressed values.
+  const progressed = AttributeEngine.ensureCompleteAttributes([
+    { name: "Control", value: 33.5 } as any,
+  ]);
+  const control = progressed.find((a) => a.name === "Control");
+  assert("A6 ensureCompleteAttributes preserves real progressed values", control?.value === 33.5);
+
+  // The reset profile builder carries zeroed attributes with identity intact.
+  const built = buildResetProfile({ questDatabase: [{ id: "q" }] }, [], []);
+  const builtAttrs = built.attributes as any[];
+  assert("A7 buildResetProfile attributes are all zero with canonical names", builtAttrs.length === ATTRIBUTE_IDENTITIES.length && builtAttrs.every((a: any, i: number) => a.value === 0 && a.name === ATTRIBUTE_IDENTITIES[i].name));
 }
 
 console.log("\n=============================================");
