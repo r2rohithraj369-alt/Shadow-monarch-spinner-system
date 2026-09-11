@@ -2283,6 +2283,22 @@ export default function EvolutionChamber({
                     )}
                   </div>
 
+                  {/* The selected quest remains available throughout the live chamber session. */}
+                  {activePracticeQuest && (
+                    <div className="p-4 bg-purple-950/10 border border-[#7B2FFF]/30 rounded-xl space-y-3 font-mono shadow-[0_0_14px_rgba(123,47,255,0.08)]">
+                      <div className="flex items-center gap-1.5 border-b border-[#7B2FFF]/20 pb-2">
+                        <Info className="w-4 h-4 text-purple-400 shrink-0" />
+                        <div className="min-w-0">
+                          <span className="text-[8.5px] text-purple-400 font-black uppercase tracking-widest block">Active Quest</span>
+                          <h5 className="text-xs font-black text-gray-100 uppercase">Quest Instructions</h5>
+                        </div>
+                      </div>
+                      <p className="max-h-64 overflow-y-auto whitespace-pre-wrap break-words pr-1 text-[10px] leading-relaxed text-gray-200 lg:max-h-none lg:overflow-visible">
+                        {activePracticeQuest.description?.trim() || "No quest instructions available."}
+                      </p>
+                    </div>
+                  )}
+
                   {/* REAL-TIME PRESSURE MODE OBJECTIVE TRACKER PANEL */}
                   {isPressureMode && pressureScenario && (
                     <motion.div 
