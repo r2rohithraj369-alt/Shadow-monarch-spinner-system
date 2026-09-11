@@ -606,6 +606,159 @@ console.log("\n=== ATTRIBUTE ENGINE (ZERO START, NO INDEX-AS-VALUE) ===");
   assert("A7 buildResetProfile attributes are all zero with canonical names", builtAttrs.length === ATTRIBUTE_IDENTITIES.length && builtAttrs.every((a: any, i: number) => a.value === 0 && a.name === ATTRIBUTE_IDENTITIES[i].name));
 }
 
+console.log("\n=== BULK QUEST COMPILER (DESCRIPTION KEEPS BLANK LINES / BALL 1-6) ===");
+{
+  const { parseBulkQuestsTextCore } = await import("../src/utils/questBulkCompiler");
+
+  // The example quest from the bug report: blank lines BETWEEN Ball 1..6 are
+  // intentional Description formatting and must NEVER create extra quests.
+  const bulkText = [
+    "Title: The Length Funnel",
+    "Description:",
+    "Execute this exact 6-ball leg-break sequence.",
+    "",
+    "  Ball 1: Bowl a wide leg-break landing on a full length outside off.",
+    "",
+    "  Ball 2: Bowl a slightly shorter leg-break targeting the outside edge.",
+    "",
+    "  Ball 3: Bowl a fuller leg-break toward the pads.",
+    "",
+    "  Ball 4: Bowl a good-length leg-break around off stump.",
+    "",
+    "  Ball 5: Bowl a slightly shorter leg-break outside off.",
+    "",
+    "  Ball 6: Bowl a full-length leg-break targeting the stumps.",
+    "",
+    "Category: Practice",
+    "Arena: Evolution Chamber",
+    "Mode: T20 Variation Drill",
+    "Overs: 1",
+    "Skill: Leg Break",
+    "Difficulty: Challenging",
+    "Total Balls: 6",
+    "To Be Executed: 6",
+    "Required Successes: 6",
+    "Success Condition: Perfect Ball, Close Ball, Just Short",
+    "Early Completion: Disabled",
+    "Failure Condition: Attempt Window Exhausted Without Required Successes",
+  ].join("\n");
+
+  const parsed = parseBulkQuestsTextCore(bulkText, []);
+  assert("BULK1 Exactly ONE quest compiled (blank lines are NOT quest separators)", parsed.readyQuests.length === 1);
+  assert("BULK2 Zero skipped quests (no Missing Title / Required Successes errors)", parsed.skippedQuests.length === 0);
+  const bq = parsed.readyQuests[0];
+  assert("BULK3 Title preserved: The Length Funnel", bq && bq.title === "The Length Funnel");
+  assert(
+    "BULK4 Multi-paragraph Description kept readable (blank lines preserved)",
+    !!bq && /Execute this exact 6-ball leg-break sequence\.\n\n\s*Ball 1:/m.test(bq.description) && /\n\n/.test(bq.description)
+  );
+  assert(
+    "BULK5 Ball 1..6 all inside ONE Description (not quest boundaries)",
+    !!bq && ["Ball 1:", "Ball 2:", "Ball 3:", "Ball 4:", "Ball 5:", "Ball 6:"].every((b) => bq.description.includes(b))
+  );
+  assert("BULK6 Indentation inside Description preserved", !!bq && /\n\s{2}Ball 1:/.test(bq.description));
+  assert("BULK7 Category parsed as Practice", bq && bq.category === "Practice");
+  assert("BULK8 Arena parsed as Evolution Chamber", bq && bq.arena === "Evolution Chamber");
+  assert("BULK9 Mode parsed as T20 Variation Drill", bq && bq.mode === "T20 Variation Drill");
+  assert("BULK10 Overs parsed as 1", bq && bq.overs === 1);
+  assert("BULK11 Skill parsed as Leg Break", bq && bq.targetSkill === "Leg Break");
+  assert("BULK12 Difficulty parsed as CHALLENGING", bq && bq.difficulty === "CHALLENGING");
+  assert("BULK13 Total Balls parsed as 6", bq && bq.totalBalls === "6");
+  assert("BULK14 To Be Executed parsed as 6", bq && bq.toBeExecuted === "6");
+  assert("BULK15 Required Successes parsed as 6", bq && bq.requiredSuccesses === "6");
+  assert("BULK16 Success Condition captured", bq && typeof bq.successCondition === "string" && bq.successCondition.length > 0);
+  assert("BULK17 Early Completion captured as Disabled", bq && bq.earlyCompletion === "Disabled");
+  assert("BULK18 Failure Condition captured", bq && typeof bq.failureCondition === "string" && bq.failureCondition.length > 0);
+  assert(
+    "BULK19 No 'Missing Title' skip",
+    !parsed.skippedQuests.some((s) => s.title === "Unknown Title" && /missing title/i.test(s.reason))
+  );
+  assert(
+    "BULK20 No 'Required Successes missing' skip",
+    !parsed.skippedQuests.some((s) => /required successes is missing/i.test(s.reason))
+  );
+}
+console.log("\n=== EVOLUTION CHAMBER FINAL BALL (6-BALL QUEST, TWO-STAGE COMPLETION) ===");
+{
+  // Canonical 6-ball structured quest — mirrors "The Length Funnel".
+  const sixBall = makeQuest(
+    {
+      totalBalls: 6,
+      executionRequired: 6,
+      successTarget: 6,
+      qualifyingCondition: "PERFECT_OR_CLOSE",
+      earlyCompletion: false,
+      failureCondition: "WINDOW_EXHAUSTED",
+    },
+    { overs: 1 }
+  );
+
+  // Balls 1-5 fully resolved (landing logged + EXECUTED assessed). The chamber
+  // MUST stay open: Ball 6 still needs BOTH stages and the session must not end.
+  const beforeBall6 = evaluateLiveQuestState(sixBall, { qualifyingSuccess: 5, executed: 5, missed: 0, totalDeliveries: 5 });
+  assert("FB1 Balls 1-5 resolved -> chamber still ACTIVE (final ball remains)", beforeBall6.status === "ACTIVE");
+
+  // Ball 6 fully resolved (landing + EXECUTED) with target met. Early completion
+  // is DISABLED, so the live evaluator stays ACTIVE at window exhaustion; the
+  // authoritative FINAL evaluation is what closes the session with SUCCESS.
+  const ball6FullSuccessLive = evaluateLiveQuestState(sixBall, { qualifyingSuccess: 6, executed: 6, missed: 0, totalDeliveries: 6 });
+  const ball6FullSuccessFinal = evaluateFinalQuestResult(sixBall, { qualifyingSuccess: 6, executed: 6, missed: 0, totalDeliveries: 6 });
+  assert("FB2 Live evaluator ACTIVE at window exhaustion (early completion disabled)", ball6FullSuccessLive.status === "ACTIVE");
+  assert("FB2b Final authoritative verdict after Ball 6 resolved -> SUCCESS", ball6FullSuccessFinal.result === "SUCCESS");
+
+  // Ball 6 assessed but target unmet -> window exhausted -> FAILED (only after
+  // the delivery with its landing outcome was logged AND assessed).
+  const ball6TargetMissed = evaluateLiveQuestState(sixBall, { qualifyingSuccess: 5, executed: 6, missed: 0, totalDeliveries: 6 });
+  assert("FB3 Final ball resolved, target unmet, window exhausted -> FAILED", ball6TargetMissed.status === "FAILED");
+
+  // A miss alone NEVER auto-fails unless the explicit Failure Condition says so.
+  const tolerant = makeQuest(
+    {
+      totalBalls: 6,
+      executionRequired: 0,
+      successTarget: 3,
+      qualifyingCondition: "PERFECT",
+      earlyCompletion: false,
+      failureCondition: "WINDOW_EXHAUSTED",
+    },
+    { overs: 1 }
+  );
+  const missedButTargetMet = evaluateFinalQuestResult(tolerant, { qualifyingSuccess: 3, executed: 5, missed: 1, totalDeliveries: 6 });
+  assert("FB4 Miss does NOT auto-fail a WINDOW_EXHAUSTED quest", missedButTargetMet.result === "SUCCESS");
+
+  const noMiss = makeQuest(
+    {
+      totalBalls: 6,
+      executionRequired: 0,
+      successTarget: 3,
+      qualifyingCondition: "PERFECT",
+      earlyCompletion: false,
+      failureCondition: "NO_MISSES_ALLOWED",
+    },
+    { overs: 1 }
+  );
+  const noMissVerdict = evaluateFinalQuestResult(noMiss, { qualifyingSuccess: 3, executed: 5, missed: 1, totalDeliveries: 6 });
+  assert("FB5 NO_MISSES_ALLOWED still fails on a missed ball", noMissVerdict.result === "FAILED");
+
+  // Qualifying landings are independent of EXECUTED/MISSED (outcome-driven).
+  assert("FB6 PERFECT BALL qualifies regardless of the execution assessment", isQualifyingDelivery(makeQuest().requirements!, perfect) === true);
+}
+
+// SOURCE GUARD: session conclusion must be gated on the final ball being FULLY
+// resolved (landing outcome + EXECUTED/MISSED both recorded). The chamber must
+// NEVER close at the wrap ball while its assessment is still pending.
+{
+  const chamberPath = path.join(process.cwd(), "src", "components", "EvolutionChamber.tsx");
+  const src = fs.readFileSync(chamberPath, "utf8");
+  assert("FB7 Final-ball wrap conclusion gated on awaitsFinalQuestAssessment", /awaitsFinalQuestAssessment/.test(src) && /if \(!awaitsFinalQuestAssessment\)/.test(src));
+  assert(
+    "FB8 EXECUTED/MISSED requires a logged, unassessed delivery (landing recorded first)",
+    /lastAssessedQuestDelivery\s*>=\s*deliveryLogs\.length\s*\)\s*return/.test(src)
+  );
+  assert("FB9 Final ball authoritative closer uses evaluateFinalQuestResult", /evaluateFinalQuestResult\(activePracticeQuest,\s*livePerf\)/.test(src));
+  assert("FB10 Landing outcome selection mandatory before logging a delivery", /if \(!selectedLengthMetric\)/.test(src));
+}
+
 console.log("\n=============================================");
 console.log(`RESULT: ${passed} passed, ${failed} failed`);
 if (failures.length > 0) {

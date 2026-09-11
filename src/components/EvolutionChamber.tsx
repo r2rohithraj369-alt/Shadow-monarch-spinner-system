@@ -716,6 +716,22 @@ export default function EvolutionChamber({
         handleConcludeSession(deliveryLogs);
         return;
       }
+
+      // FINAL BALL FULLY RESOLVED → authoritative final verdict. The attempt
+      // window is exhausted and every logged delivery now has BOTH required
+      // stages: its landing outcome (recorded when the delivery was logged) and
+      // its EXECUTED/MISSED assessment (applied just above). The live evaluator
+      // deliberately stays ACTIVE here when early completion is disabled, so
+      // evaluateFinalQuestResult is the authoritative closer: finalize the ball,
+      // evaluate the final quest/session result, then end the session. There is
+      // NO path where the session ends while either stage is still missing.
+      if (deliveryLogs.length >= getActiveQuestMaxBalls(activePracticeQuest)) {
+        const finalVerdict = evaluateFinalQuestResult(activePracticeQuest, livePerf);
+        const finalSucceeded = finalVerdict.result === "SUCCESS";
+        setExecutionResult(finalSucceeded ? "COMPLETED" : "FAILED");
+        handleConcludeSession(deliveryLogs);
+        return;
+      }
     }
   };
 
@@ -829,14 +845,23 @@ export default function EvolutionChamber({
       }
     }
 
-    // Update ball counters
+    // Update ball counters. A structured quest's final delivery is not
+    // complete until its independent EXECUTED/MISSED assessment is recorded.
+    // Keep the chamber open for that final assessment instead of treating
+    // "Ball 6 logged" as "Ball 6 fully resolved".
     if (!isExtra) {
       const nextLegalCount = legalBallsInCurrentOver + 1;
       if (nextLegalCount >= 6) {
         const nextOver = currentOverNumber + 1;
         if (nextOver > totalOversGoal) {
-          // Trigger session wrap
-          handleConcludeSession(updatedLogs);
+          const awaitsFinalQuestAssessment =
+            activePracticeQuest &&
+            sessionActive &&
+            executionResult === "ACTIVE" &&
+            isStructuredWindowQuest(activePracticeQuest);
+          if (!awaitsFinalQuestAssessment) {
+            handleConcludeSession(updatedLogs);
+          }
         } else {
           setCurrentOverNumber(nextOver);
           setLegalBallsInCurrentOver(0);

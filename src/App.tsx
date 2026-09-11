@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import {
   Activity,
@@ -44,7 +44,7 @@ import QuestDatabase from "./components/QuestDatabase";
 import { QuestDatabaseManager } from "./utils/questDatabaseManager";
 import { cloudSync, UnifiedProfile, SyncState } from "./utils/cloudSyncManager";
 import { getSupabase } from "./utils/supabaseClient";
-import { resolveBootOwnership, setLastUserId, GUEST_USER_ID, purgePlayerScopedStorage } from "./utils/playerStorage";
+import { resolveBootOwnership, getPersistedSupabaseUserId, setLastUserId, GUEST_USER_ID, purgePlayerScopedStorage } from "./utils/playerStorage";
 import CloudPortalAccess from "./components/CloudPortalAccess";
 import PlayerAvatar from "./components/PlayerAvatar";
 import appLogo from "./assets/images/app_logo_1782646701079.jpg";
@@ -70,6 +70,20 @@ import { VolumeX, Volume2, Music, Trash2, RefreshCw } from "lucide-react";
 import { evaluateQuestCompletion } from "./components/EvolutionChamber";
 import { audioManager } from "./utils/audioManager";
 import { generateHighlyVariedQuest, QuestHistoryTracker } from "./utils/questEngine";
+import { MonarchEventOverlay } from "./monarchEvents/MonarchEventOverlay";
+import { monarchEventDispatcher } from "./monarchEvents/eventDispatcher";
+import {
+  detectPlayerLevelUp,
+  detectSkillLevelUps,
+  buildEvolutionPassEvent,
+  buildAscensionPassEvent,
+  buildHighThreatEvent,
+} from "./monarchEvents/detection";
+import {
+  mergeHistoryRecords,
+  normalizeHistoryRecords,
+  HistorySyncStatus,
+} from "./utils/evolutionHistoryStore";
 
 export function getNextStatusOf(currentRank: string): string {
   switch (currentRank) {
@@ -603,12 +617,6 @@ const INITIAL_LOGS: EvolutionLogEntry[] = [
 ];
 
 export default function App() {
-  // WIPE PREVIOUS STORAGE ONCE TO SECURE ABSOLUTE RESET TO LEVEL 0
-  if (!localStorage.getItem("monarch_system_reset_v10")) {
-    localStorage.clear();
-    localStorage.setItem("monarch_system_reset_v10", "true");
-  }
-
   const [showSplash, setShowSplash] = useState<boolean>(true);
   const [showStartupLoader, setShowStartupLoader] = useState<boolean>(false);
   const [internalLoader, setInternalLoader] = useState<{
@@ -1038,9 +1046,13 @@ export default function App() {
     console.log("[HYDRATION] Player state initializers will use genuine defaults — unowned cache purged:", bootOwnership.reason);
   }
 
+  // Authenticated player state is always hydrated from Supabase first. A
+  // same-account cache can be stale after a reset on another device.
+  const usePlayerCacheOnBoot = !getPersistedSupabaseUserId();
+
   // STATE VARIABLES
   const [player, setPlayer] = useState<PlayerProfile>(() => {
-    const saved = localStorage.getItem("monarch_player_v10");
+    const saved = usePlayerCacheOnBoot ? localStorage.getItem("monarch_player_v10") : null;
     if (saved) {
       try {
         const parsed = JSON.parse(saved);
@@ -1082,42 +1094,51 @@ export default function App() {
   });
 
   const [attributes, setAttributes] = useState<Attribute[]>(() => {
-    const saved = localStorage.getItem("monarch_attributes_v10");
+    const saved = usePlayerCacheOnBoot ? localStorage.getItem("monarch_attributes_v10") : null;
     return saved ? AttributeEngine.ensureCompleteAttributes(JSON.parse(saved)) : INITIAL_ATTRIBUTES;
   });
 
   const [skills, setSkills] = useState<SkillItem[]>(() => {
-    const saved = localStorage.getItem("monarch_skills_v10");
+    const saved = usePlayerCacheOnBoot ? localStorage.getItem("monarch_skills_v10") : null;
     return saved ? JSON.parse(saved) : INITIAL_SKILLS;
   });
 
   const [directives, setDirectives] = useState<SystemDirective[]>(() => {
-    const saved = localStorage.getItem("monarch_directives_v10");
+    const saved = usePlayerCacheOnBoot ? localStorage.getItem("monarch_directives_v10") : null;
     return saved ? JSON.parse(saved) : INITIAL_DIRECTIVES;
   });
 
   const [dungeons, setDungeons] = useState<DungeonRecord[]>(() => {
-    const saved = localStorage.getItem("monarch_dungeons_v10");
+    const saved = usePlayerCacheOnBoot ? localStorage.getItem("monarch_dungeons_v10") : null;
     return saved ? JSON.parse(saved) : INITIAL_DUNGEONS;
   });
 
   const [logs, setLogs] = useState<EvolutionLogEntry[]>(() => {
-    const saved = localStorage.getItem("monarch_logs_v10");
+    const saved = usePlayerCacheOnBoot ? localStorage.getItem("monarch_logs_v10") : null;
     return saved ? JSON.parse(saved) : INITIAL_LOGS;
   });
 
   const [evolutionHistory, setEvolutionHistory] = useState<any[]>(() => {
     try {
-      const saved = localStorage.getItem("monarch_evolution_history_v5");
+      const saved = usePlayerCacheOnBoot ? localStorage.getItem("monarch_evolution_history_v5") : null;
       return saved ? JSON.parse(saved) : [];
     } catch {
       return [];
     }
   });
 
+  /** Dedicated evolution-history cloud sync status (drives the History UI). */
+  const [evolutionHistoryStatus, setEvolutionHistoryStatus] = useState<HistorySyncStatus>("idle");
+
+  // Authoritative transition refs for the notification watchers. These are
+  // seeded from the CURRENT state so initial mount never fires a popup, and
+  // they are silently re-synced during cloud hydration (no fake events).
+  const playerLevelRef = useRef<number>(INITIAL_PLAYER.level);
+  const skillsLevelRef = useRef<Record<string, number>>({});
+
   // AI-driven analysis models
   const [aiAnalysis, setAiAnalysis] = useState<AIAnalysisResponse | null>(() => {
-    const saved = localStorage.getItem("monarch_ai_analysis_v10");
+    const saved = usePlayerCacheOnBoot ? localStorage.getItem("monarch_ai_analysis_v10") : null;
     return saved ? JSON.parse(saved) : null;
   });
 
@@ -1127,16 +1148,16 @@ export default function App() {
 
   // Active Quest Focus ID link
   const [activeQuestId, setActiveQuestId] = useState<string | null>(() => {
-    return localStorage.getItem("monarch_active_quest_v10") || "d1";
+    return usePlayerCacheOnBoot ? localStorage.getItem("monarch_active_quest_v10") || "d1" : "d1";
   });
 
   // Practice Quests states
   const [practiceQuests, setPracticeQuests] = useState<PracticeQuest[]>(() => {
-    return loadAllQuestsCombined();
+    return usePlayerCacheOnBoot ? loadAllQuestsCombined() : [];
   });
 
   const [activePracticeQuestId, setActivePracticeQuestId] = useState<string | null>(() => {
-    return localStorage.getItem("monarch_active_practice_quest_id_v10") || null;
+    return usePlayerCacheOnBoot ? localStorage.getItem("monarch_active_practice_quest_id_v10") || null : null;
   });
 
   const [activePressureScenarioId, setActivePressureScenarioId] = useState<string | null>(null);
@@ -1144,7 +1165,7 @@ export default function App() {
 
   const [completedQuestIds, setCompletedQuestIds] = useState<string[]>(() => {
     try {
-      const saved = localStorage.getItem("monarch_completed_quest_ids_v10");
+      const saved = usePlayerCacheOnBoot ? localStorage.getItem("monarch_completed_quest_ids_v10") : null;
       return saved ? JSON.parse(saved) : [];
     } catch {
       return [];
@@ -1185,7 +1206,7 @@ export default function App() {
 
   const [failedQuestIds, setFailedQuestIds] = useState<string[]>(() => {
     try {
-      const saved = localStorage.getItem("monarch_failed_quest_ids_v10");
+      const saved = usePlayerCacheOnBoot ? localStorage.getItem("monarch_failed_quest_ids_v10") : null;
       return saved ? JSON.parse(saved) : [];
     } catch {
       return [];
@@ -1194,7 +1215,7 @@ export default function App() {
 
   const [recentlyGeneratedIds, setRecentlyGeneratedIds] = useState<string[]>(() => {
     try {
-      const saved = localStorage.getItem("monarch_recently_generated_quest_ids_v10");
+      const saved = usePlayerCacheOnBoot ? localStorage.getItem("monarch_recently_generated_quest_ids_v10") : null;
       return saved ? JSON.parse(saved) : [];
     } catch {
       return [];
@@ -1235,7 +1256,19 @@ export default function App() {
       if (profile.completedQuestIds) setCompletedQuestIds(profile.completedQuestIds);
       if (profile.failedQuestIds) setFailedQuestIds(profile.failedQuestIds);
       if (profile.recentlyGeneratedQuestIds) setRecentlyGeneratedIds(profile.recentlyGeneratedQuestIds);
-      if (profile.evolutionHistory) setEvolutionHistory(profile.evolutionHistory);
+      // EVOLUTION HISTORY — cloud-first safety merge. profile.evolutionHistory
+      // already carries the union from triggerInitialSync; the merge here is a
+      // final defensive guard so state can NEVER be swapped for a smaller
+      // (possibly empty/unhydrated) array.
+      if (profile.evolutionHistory) setEvolutionHistory(normalizeHistoryRecords(profile.evolutionHistory));
+    });
+
+    // Dedicated evolution-history updater (cloud table → React state).
+    cloudSync.registerEvolutionHistoryUpdater((records: any[]) => {
+      setEvolutionHistory(normalizeHistoryRecords(records));
+    });
+    cloudSync.registerEvolutionHistoryStatusListener((status) => {
+      setEvolutionHistoryStatus(status);
     });
 
     // ACCOUNT ISOLATION + FULL GAME RESET — reset ALL live player state to the
@@ -1309,6 +1342,10 @@ export default function App() {
         setIsGuest(false);
         localStorage.setItem("monarch_logged_v10", "true");
         localStorage.setItem("monarch_is_guest_v10", "false");
+        // Notification registry switches to the authenticated owner so events
+        // from a previous account can never leak into or be suppressed for the
+        // new one.
+        monarchEventDispatcher.init(session.user.id);
         return true;
       }
 
@@ -1316,6 +1353,7 @@ export default function App() {
       setIsGuest(false);
       localStorage.setItem("monarch_logged_v10", "false");
       localStorage.setItem("monarch_is_guest_v10", "false");
+      monarchEventDispatcher.reset();
       return false;
     };
 
@@ -1386,6 +1424,11 @@ export default function App() {
 
   // PERSIST STATE RECURRING
   useEffect(() => {
+    // No player-owned state may be written before this authenticated user's
+    // cloud hydration completes. This blocks both first-paint defaults and a
+    // previous account's React state from becoming a cloud upload.
+    if (!isLoggedIn || isGuest || !cloudSync.canPersistPlayerState()) return;
+
     localStorage.setItem("monarch_active_quest_v10", activeQuestId || "");
     localStorage.setItem("monarch_practice_quests_v10", JSON.stringify(practiceQuests));
     if (activePracticeQuestId) {
@@ -1402,7 +1445,15 @@ export default function App() {
     localStorage.setItem("monarch_directives_v10", JSON.stringify(directives));
     localStorage.setItem("monarch_dungeons_v10", JSON.stringify(dungeons));
     localStorage.setItem("monarch_logs_v10", JSON.stringify(logs));
-    localStorage.setItem("monarch_evolution_history_v5", JSON.stringify(evolutionHistory));
+    // Hydration guard (Part 8): before the first cloud hydration for the
+    // current user completes, NEVER persist a temporary empty history array —
+    // the local cache may still hold valid records that the cloud pull is about
+    // to be unioned with. Writing an empty cache here would then be re-read by
+    // the chamber / profile sync and could flush valid cloud history.
+    const historyHydrated = isLoggedIn && !isGuest ? cloudSync.isBootHydrated() : true;
+    if (evolutionHistory.length > 0 || historyHydrated) {
+      localStorage.setItem("monarch_evolution_history_v5", JSON.stringify(evolutionHistory));
+    }
     localStorage.setItem("monarch_completed_quest_ids_v10", JSON.stringify(completedQuestIds));
     localStorage.setItem("monarch_failed_quest_ids_v10", JSON.stringify(failedQuestIds));
     localStorage.setItem("monarch_recently_generated_quest_ids_v10", JSON.stringify(recentlyGeneratedIds));
@@ -1410,26 +1461,76 @@ export default function App() {
       localStorage.setItem("monarch_ai_analysis_v10", JSON.stringify(aiAnalysis));
     }
 
-    if (isLoggedIn && !isGuest) {
-      cloudSync.queueCloudSync({
-        player,
-        attributes,
-        skills,
-        directives,
-        dungeons,
-        logs,
-        aiAnalysis,
-        settings,
-        activeQuestId,
-        practiceQuests,
-        activePracticeQuestId,
-        completedQuestIds,
-        failedQuestIds,
-        recentlyGeneratedQuestIds: recentlyGeneratedIds,
-        evolutionHistory
-      });
-    }
+    cloudSync.queueCloudSync({
+      player,
+      attributes,
+      skills,
+      directives,
+      dungeons,
+      logs,
+      aiAnalysis,
+      settings,
+      activeQuestId,
+      practiceQuests,
+      activePracticeQuestId,
+      completedQuestIds,
+      failedQuestIds,
+      recentlyGeneratedQuestIds: recentlyGeneratedIds,
+      evolutionHistory
+    });
   }, [isLoggedIn, isGuest, player, attributes, skills, directives, dungeons, logs, aiAnalysis, settings, practiceQuests, activePracticeQuestId, completedQuestIds, failedQuestIds, recentlyGeneratedIds, evolutionHistory]);
+
+  // ===========================================================================
+  // MONARCH EVENT NOTIFICATION WATCHERS (authoritative transitions only)
+  // ===========================================================================
+  const currentNotificationOwner = (): string =>
+    isGuest
+      ? GUEST_USER_ID
+      : cloudSync.getSession()?.user?.id || (isLoggedIn ? GUEST_USER_ID : "__anonymous__");
+
+  const playerLevelWatchInitRef = useRef(false);
+
+  // PLAYER LEVEL UP — react ONLY to real `player.level` increases caused by
+  // local gameplay. Cloud-hydration writes and the initial mount never fire.
+  useEffect(() => {
+    if (!player) return;
+    const prev = playerLevelRef.current;
+    if (!playerLevelWatchInitRef.current) {
+      playerLevelRef.current = player.level;
+      playerLevelWatchInitRef.current = true;
+      return;
+    }
+    if (prev === player.level) return;
+    if (cloudSync.isApplyingCloudDataNow()) {
+      // Hydration echo — sync the baseline silently, no celebration popup.
+      playerLevelRef.current = player.level;
+      return;
+    }
+    playerLevelRef.current = player.level;
+    const evt = detectPlayerLevelUp(currentNotificationOwner(), prev, player.level);
+    if (evt) monarchEventDispatcher.enqueue(evt);
+  }, [player?.level, isGuest, isLoggedIn]);
+
+  const skillLevelWatchInitRef = useRef(false);
+
+  // SKILL LEVEL UP — one event per skill whose LEVEL actually increased from a
+  // real state transition (never from hydration, re-renders, or new skills).
+  useEffect(() => {
+    const nextMap: Record<string, number> = {};
+    for (const s of skills) if (s && s.id) nextMap[s.id] = s.level || 0;
+
+    const prevMap = skillsLevelRef.current;
+    if (!skillLevelWatchInitRef.current) {
+      skillsLevelRef.current = nextMap;
+      skillLevelWatchInitRef.current = true;
+      return;
+    }
+    const prevSkills = Object.entries(prevMap).map(([id, level]) => ({ id, level }));
+    const events = detectSkillLevelUps(currentNotificationOwner(), prevSkills, skills);
+    skillsLevelRef.current = nextMap;
+    if (cloudSync.isApplyingCloudDataNow()) return; // hydration echo — silent
+    events.forEach((evt) => monarchEventDispatcher.enqueue(evt));
+  }, [skills, isGuest, isLoggedIn]);
 
   // Sync the Ambient drone with player rank + level variations
   useEffect(() => {

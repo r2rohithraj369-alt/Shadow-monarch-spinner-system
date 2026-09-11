@@ -178,7 +178,7 @@ export function resolveBootOwnership(): BootOwnershipResult {
   bootOwnershipResolved = true;
 
   const sessionUserId = getPersistedSupabaseUserId();
-  const lastUserId = getLastUserId();
+  let lastUserId = getLastUserId();
   result.resolvedOwnerId = sessionUserId ?? (lastUserId === GUEST_USER_ID ? GUEST_USER_ID : null);
 
   if (!hasLocalPlayerData()) {
@@ -204,7 +204,8 @@ export function resolveBootOwnership(): BootOwnershipResult {
   }
 
   // No persisted Supabase session: this boot is guest/offline mode.
-  if (lastUserId && lastUserId !== GUEST_USER_ID) {
+  if (hasLocalPlayerData()) {
+    lastUserId ||= "unowned";
     const purgedKeys = purgePlayerScopedStorage();
     result.purged = true;
     result.reason = `guest/offline boot — cache belongs to signed-in user ${lastUserId.slice(0, 8)} — purged ${purgedKeys.length} player keys`;

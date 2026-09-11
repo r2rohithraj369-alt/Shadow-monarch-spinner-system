@@ -7,6 +7,16 @@ import {
 import { Capacitor } from "@capacitor/core";
 import { App as CapApp } from "@capacitor/app";
 import { Browser as CapBrowser } from "@capacitor/browser";
+import {
+  fetchCloudHistory,
+  appendCloudHistory,
+  mergeHistoryRecords,
+  normalizeHistoryRecords,
+  readLocalHistoryCache,
+  writeLocalHistoryCache,
+  migrateLocalHistoryToCloud,
+  HistorySyncStatus,
+} from "./evolutionHistoryStore";
 
 export interface UnifiedProfile {
   player: any;
@@ -38,11 +48,19 @@ class CloudSyncManager {
   private syncStateCallback: ((state: SyncState, msg?: string) => void) | null = null;
   private stateResetCallback: (() => void) | null = null;
   private defaultProfileProvider: (() => UnifiedProfile) | null = null;
+  /** Dedicated evolution-history state updater (independent of full profile applies). */
+  private evolutionHistoryUpdaterCallback: ((records: any[]) => void) | null = null;
+  /** Dedicated evolution-history cloud status listener for the UI. */
+  private evolutionHistoryStatusCallback: ((status: HistorySyncStatus) => void) | null = null;
+  private evolutionHistoryStatusValue: HistorySyncStatus = "idle";
   
   private userSession: any = null;
   private isSyncing: boolean = false;
   private uploadTimer: any = null;
   private isApplyingCloudData: boolean = false;
+  /** Invalidates every in-flight hydration/upload at account and reset boundaries. */
+  private stateGeneration: number = 0;
+  private hydratedUserId: string | null = null;
   /**
    * False until the FIRST triggerInitialSync for the current user completes.
    * While false, queueCloudSync() is a no-op — the stale React state from a
@@ -86,6 +104,72 @@ class CloudSyncManager {
   }
 
   /**
+   * Boot-hydration gate for UI consumers: false until the FIRST
+   * triggerInitialSync for the current user completes. While false, automatic
+   * uploads are blocked so stale (possibly previous-account) state can never
+   * be flushed to the cloud.
+   */
+  public isBootHydrated(): boolean {
+    return this.bootHydrationDone;
+  }
+
+  /** True only for the authenticated owner whose cloud profile is active. */
+  public canPersistPlayerState(): boolean {
+    const userId = this.userSession?.user?.id;
+    return Boolean(
+      userId &&
+      this.bootHydrationDone &&
+      this.hydratedUserId === userId &&
+      getLastUserId() === userId
+    );
+  }
+
+  /** Cancel delayed work and make all older async callbacks stale. */
+  private invalidatePlayerOperations() {
+    if (this.uploadTimer) {
+      clearTimeout(this.uploadTimer);
+      this.uploadTimer = null;
+    }
+    this.stateGeneration += 1;
+    this.bootHydrationDone = false;
+    this.hydratedUserId = null;
+  }
+
+  /** True while a cloud apply is writing React state (hydration echo). */
+  public isApplyingCloudDataNow(): boolean {
+    return this.isApplyingCloudData;
+  }
+
+  /**
+   * Register a callback that receives the MERGED evolution history (cloud +
+   * local) independently of full profile applies. This lets the Evolution
+   * Chamber history stay in sync without re-applying the entire game profile.
+   */
+  public registerEvolutionHistoryUpdater(callback: (records: any[]) => void) {
+    this.evolutionHistoryUpdaterCallback = callback;
+    // Push the current known state (if any) to the fresh consumer.
+    if (this.evolutionHistoryStatusValue !== "error") {
+      const stored = readLocalHistoryCache();
+      if (stored.length > 0) callback(stored);
+    }
+  }
+
+  /** Register a listener for the dedicated evolution-history cloud status. */
+  public registerEvolutionHistoryStatusListener(callback: (status: HistorySyncStatus) => void) {
+    this.evolutionHistoryStatusCallback = callback;
+    callback(this.evolutionHistoryStatusValue);
+  }
+
+  private setEvolutionHistoryStatus(status: HistorySyncStatus) {
+    this.evolutionHistoryStatusValue = status;
+    this.evolutionHistoryStatusCallback?.(status);
+  }
+
+  public getEvolutionHistoryStatus(): HistorySyncStatus {
+    return this.evolutionHistoryStatusValue;
+  }
+
+  /**
    * Register callback to sync state changes to UI
    */
   public registerSyncStateListener(callback: (state: SyncState, msg?: string) => void) {
@@ -117,6 +201,7 @@ class CloudSyncManager {
 
     // Load initial session
     supabase.auth.getSession().then(({ data: { session } }: any) => {
+      if (this.userSession?.user?.id !== session?.user?.id) this.invalidatePlayerOperations();
       this.userSession = session;
       if (session?.user) {
         this.triggerInitialSync();
@@ -125,6 +210,7 @@ class CloudSyncManager {
 
     // Sub to auth modifications
     supabase.auth.onAuthStateChange(async (event: string, session: any) => {
+      if (this.userSession?.user?.id !== session?.user?.id) this.invalidatePlayerOperations();
       this.userSession = session;
       if (session?.user) {
         await this.triggerInitialSync();
@@ -140,13 +226,7 @@ class CloudSyncManager {
    */
   private handleSignedOutCleanup() {
     console.log("[Auth] Signed out — purging player-scoped local cache and resetting live state.");
-    // Cancel any pending debounced upload so the signed-out player's state can
-    // never be flushed to the cloud after logout.
-    if (this.uploadTimer) {
-      clearTimeout(this.uploadTimer);
-      this.uploadTimer = null;
-    }
-    this.bootHydrationDone = false;
+    this.invalidatePlayerOperations();
     purgePlayerScopedStorage();
     setLastUserId(null);
     this.stateResetCallback?.();
@@ -249,8 +329,10 @@ class CloudSyncManager {
     this.isSyncing = true;
 
     const syncUserId = this.userSession.user.id;
+    const syncGeneration = this.stateGeneration;
     /** Abort when the authenticated user changed since this sync started. */
-    const sessionChanged = () => this.userSession?.user?.id !== syncUserId;
+    const sessionChanged = () => this.userSession?.user?.id !== syncUserId || this.stateGeneration !== syncGeneration;
+    let hydrationSucceeded = false;
 
     const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -332,83 +414,29 @@ class CloudSyncManager {
 
       if (data) {
         const cloudProfile = this.normalizeProfile(data.profile_data as UnifiedProfile);
-        const cloudUpdatedAt = new Date(data.updated_at).getTime() || cloudProfile.updated_at || 0;
-        const localUpdatedAt = localProfile.updated_at || 0;
-
-        // Perform multi-metric progression checks as requested!
-        const localLevel = localProfile.player?.level || 1;
-        const cloudLevel = cloudProfile.player?.level || 1;
-        const localXp = localProfile.player?.xp || 0;
-        const cloudXp = cloudProfile.player?.xp || 0;
-
-        const localQuestsCleared = localProfile.practiceQuests?.filter(q => q.completed).length || 0;
-        const cloudQuestsCleared = cloudProfile.practiceQuests?.filter(q => q.completed).length || 0;
-        const localQuestDbCount = localProfile.questDatabase?.length || 0;
-        const cloudQuestDbCount = cloudProfile.questDatabase?.length || 0;
-
-        let localIsMoreAdvanced = false;
-        let mergedProfile: UnifiedProfile | null = null;
-
-        // Higher level beats lower level always
-        if (localLevel > cloudLevel) {
-          localIsMoreAdvanced = true;
-        } else if (localLevel === cloudLevel) {
-          // If level matches, higher XP wins
-          if (localXp > cloudXp) {
-            localIsMoreAdvanced = true;
-          } else if (localXp === cloudXp) {
-            // More completed quests wins
-            if (localQuestsCleared > cloudQuestsCleared) {
-              localIsMoreAdvanced = true;
-            } else if (localQuestDbCount > 0 && cloudQuestDbCount === 0) {
-              localIsMoreAdvanced = true;
-            } else if (localUpdatedAt > cloudUpdatedAt) {
-              // Fallback to timestamp
-              localIsMoreAdvanced = true;
-            }
-          }
-        }
-
-        mergedProfile = this.mergeQuestDatabases(localIsMoreAdvanced ? localProfile : cloudProfile, localProfile, cloudProfile);
-
-        console.log(`[Sync Conflict Check] Cloud Level: ${cloudLevel} (XP: ${cloudXp}), Local Level: ${localLevel} (XP: ${localXp}). More advanced: ${localIsMoreAdvanced ? 'Local' : 'Cloud'}`);
-
-        // 3. Conflict Resolution
-        if (!localProfile.player) {
-          // Empty clean local device - take cloud
-          console.log("Empty device. Direct restoral of cloud profile.");
-          this.applyProfileToLocal(mergedProfile);
-          this.setSyncState("success", "Restored latest profile from cloud!");
-        } else if (localIsMoreAdvanced) {
-          // Local is higher progress, push local back up to Supabase to update it
-          console.log("Local metrics are superior. Syncing local progress up to remote storage.");
-          await this.uploadProfileToCloud(mergedProfile);
-          this.setSyncState("success", "Synced advanced offline progress to Cloud!");
-        } else {
-          // Cloud has higher progress - apply to local device
-          console.log("Cloud metrics are superior. Replacing local database state.");
-          this.applyProfileToLocal(mergedProfile);
-          if (mergedProfile !== cloudProfile) {
-            await this.uploadProfileToCloud(mergedProfile);
-          }
-          this.setSyncState("success", "Restored advanced levels from cloud.");
-        }
+        // Supabase is the sole authority for progression. Local storage may
+        // contribute only global libraries, never player state or history.
+        const hydratedProfile = this.mergeQuestDatabases(cloudProfile, localProfile, cloudProfile);
+        this.applyProfileToLocal({ ...hydratedProfile, evolutionHistory: cloudProfile.evolutionHistory });
+        hydrationSucceeded = true;
+        this.setSyncState("success", "Restored player state from cloud.");
       } else {
         // First-time user profile initialization in Cloud.
         // ACCOUNT ISOLATION: a user with no cloud row is a NEW PLAYER. If the
         // local cache belongs to this same user (e.g. their cloud row was
         // removed), back it up. Otherwise initialize a genuine fresh starting
         // profile — NEVER the previous player's leftover local state.
-        if (localProfile.player) {
+        if (false && localProfile.player) {
           console.log("No cloud row, but local data belongs to this user — restoring cloud backup from local.");
           await this.uploadProfileToCloud(localProfile);
         } else {
           console.log("Initializing first-time cloud profile with a genuine new-player starting state.");
           const freshProfile = this.defaultProfileProvider
             ? this.defaultProfileProvider()
-            : localProfile;
-          await this.uploadProfileToCloud(freshProfile);
+            : this.normalizeProfile({ player: null } as UnifiedProfile);
+          await this.uploadProfileToCloud(freshProfile, syncUserId, syncGeneration, true);
           this.applyProfileToLocal(freshProfile);
+          hydrationSucceeded = true;
         }
         this.setSyncState("success", "New player profile initialized successfully.");
       }
@@ -421,8 +449,81 @@ class CloudSyncManager {
       // Until then, automatic uploads are blocked so the React state left over
       // from a previous account/session can never be pushed to the new user's
       // cloud row (the boot-upload poisoning bug).
-      this.bootHydrationDone = true;
+      if (!sessionChanged() && hydrationSucceeded) {
+        this.bootHydrationDone = true;
+        this.hydratedUserId = syncUserId;
+      }
+      // Dedicated-table history reconciliation (append-only, cloud-first).
+      // Never awaited by the caller — failures only degrade the history status,
+      // never the rest of the sync flow.
+      if (!sessionChanged() && hydrationSucceeded) {
+        void this.syncDedicatedEvolutionHistory(syncUserId);
+      }
     }
+  }
+
+  /**
+   * Reconcile the DEDICATED evolution_history table with the local cache.
+   *
+   * Durable, append-only, cloud-first:
+   *   1. Pull ALL cloud rows for the authenticated user (RLS scoped).
+   *   2. Merge cloud + local into one deduped list (never smaller).
+   *   3. Push that merged list to the client cache + React state.
+   *   4. Insert-or-ignore any local-only records into the table so offline
+   *      completions are captured — never any deletions.
+   *
+   * If the table is unreachable the local cache is left untouched (we never
+   * wipe valid local history because of a network blip) and the status is
+   * reported for the UI.
+   */
+  private async syncDedicatedEvolutionHistory(userId: string) {
+    const supabase = getSupabase();
+    if (!supabase || !this.userSession?.user) {
+      this.setEvolutionHistoryStatus("idle");
+      return;
+    }
+    if (this.userSession.user.id !== userId) return; // stale-session guard
+    const historyGeneration = this.stateGeneration;
+    const stillCurrent = () =>
+      this.userSession?.user?.id === userId && this.stateGeneration === historyGeneration && this.canPersistPlayerState();
+
+    this.setEvolutionHistoryStatus("loading");
+
+    const fetchRes = await fetchCloudHistory(supabase, userId);
+    if (!stillCurrent()) return;
+    if (!fetchRes.ok) {
+      // Table missing / offline — never destroy the local cache.
+      this.setEvolutionHistoryStatus("error");
+      return;
+    }
+
+    const local = this.getLocalProfileFromStorage();
+    const localHistory = normalizeHistoryRecords(
+      Array.isArray(local.evolutionHistory) ? local.evolutionHistory : readLocalHistoryCache()
+    );
+    const merged = mergeHistoryRecords(fetchRes.records, localHistory);
+
+    // Persist the merged view to the local cache + React state.
+    writeLocalHistoryCache(merged);
+    this.evolutionHistoryUpdaterCallback?.(merged);
+
+    // Append any local-only records (offline completions) to the table.
+    const cloudIds = new Set(fetchRes.records.map((r: any) => r.id));
+    const pending = merged.filter((rec: any) => !cloudIds.has(rec.id));
+    if (pending.length > 0) {
+      const appendRes = await appendCloudHistory(supabase, userId, pending);
+      if (!stillCurrent()) return;
+      if (!appendRes.ok) {
+        this.setEvolutionHistoryStatus("error");
+        return;
+      }
+    }
+
+    // One-time migration of legacy profile-embedded/local history.
+    if (!stillCurrent()) return;
+    await migrateLocalHistoryToCloud(supabase, userId, merged);
+
+    this.setEvolutionHistoryStatus("synced");
   }
 
   /**
@@ -556,7 +657,7 @@ class CloudSyncManager {
    * Commit fetched profile values down to local storage and tell React states to update
    */
   public applyProfileToLocal(profile: UnifiedProfile) {
-    if (!profile || !profile.player) return;
+    if (!profile) return;
 
     this.isApplyingCloudData = true;
 
@@ -597,7 +698,7 @@ class CloudSyncManager {
       localStorage.setItem("monarch_sys_audio_settings", JSON.stringify(profile.audioSettings));
     }
     if (profile.evolutionHistory) {
-      localStorage.setItem("monarch_evolution_history_v5", JSON.stringify(profile.evolutionHistory));
+      localStorage.setItem("monarch_evolution_history_v5", JSON.stringify(normalizeHistoryRecords(profile.evolutionHistory)));
     }
     localStorage.setItem("monarch_sync_updated_at", (profile.updated_at || Date.now()).toString());
 
@@ -613,11 +714,25 @@ class CloudSyncManager {
   /**
    * Directly posts metadata object to the `player_profiles` row for verified user
    */
-  public async uploadProfileToCloud(profile: UnifiedProfile) {
+  public async uploadProfileToCloud(
+    profile: UnifiedProfile,
+    expectedUserId?: string,
+    expectedGeneration?: number,
+    allowBeforeHydration: boolean = false
+  ) {
     const supabase = getSupabase();
     if (!supabase || !this.userSession?.user) return;
 
     const user = this.userSession.user;
+    const uploadUserId = expectedUserId || user.id;
+    const uploadGeneration = expectedGeneration ?? this.stateGeneration;
+    const uploadIsCurrent = () =>
+      this.userSession?.user?.id === uploadUserId &&
+      user.id === uploadUserId &&
+      this.stateGeneration === uploadGeneration &&
+      getLastUserId() === uploadUserId &&
+      (allowBeforeHydration || this.canPersistPlayerState());
+    if (!uploadIsCurrent()) return;
     const now = Date.now();
     const profileWithDatabases = this.normalizeProfile({
       ...profile,
@@ -634,6 +749,7 @@ class CloudSyncManager {
     profileWithDatabases.updated_at = now;
     localStorage.setItem("monarch_sync_updated_at", now.toString());
 
+    if (!uploadIsCurrent()) return;
     const { error } = await supabase.from("player_profiles").upsert(
       {
         id: user.id,
@@ -647,6 +763,20 @@ class CloudSyncManager {
       console.error("Supabase Database Upload Failure:", error);
       throw error;
     }
+
+    // Dedicated-table append (append-only / insert-or-ignore). A brand-new
+    // completion is captured durably alongside the profile upload. Failures are
+    // non-fatal: the record stays in the local cache and will be reconciled by
+    // the next syncDedicatedEvolutionHistory pass.
+    try {
+      if (!uploadIsCurrent()) return;
+      const history = normalizeHistoryRecords(profile.evolutionHistory);
+      if (history.length > 0) {
+        await appendCloudHistory(supabase, user.id, history);
+      }
+    } catch (e) {
+      console.warn("[Cloud Sync] Evolution history table append failed (non-fatal):", e);
+    }
   }
 
   /**
@@ -657,9 +787,10 @@ class CloudSyncManager {
     const supabase = getSupabase();
     if (!supabase || !this.userSession?.user) return; // Running in local mode
     if (this.isApplyingCloudData) return; // Avoid echoing back retrieved cloud profiles!
-    if (!this.bootHydrationDone) return; // Boot gate: never upload pre-hydration (possibly previous-account) state
+    if (!this.canPersistPlayerState()) return;
 
     const scheduledUserId = this.userSession.user.id;
+    const scheduledGeneration = this.stateGeneration;
 
     if (this.uploadTimer) {
       clearTimeout(this.uploadTimer);
@@ -670,7 +801,7 @@ class CloudSyncManager {
         // STALE-SESSION GUARD: if the authenticated user changed between
         // scheduling and firing, discard this upload — it belongs to the old
         // account and must never be written to the new account's row.
-        if (this.userSession?.user?.id !== scheduledUserId) {
+        if (this.userSession?.user?.id !== scheduledUserId || this.stateGeneration !== scheduledGeneration || !this.canPersistPlayerState()) {
           console.log(`[Sync] Discarded stale upload for ${scheduledUserId.slice(0, 8)}… — current user differs.`);
           return;
         }
@@ -678,7 +809,7 @@ class CloudSyncManager {
           ...currentState,
           updated_at: Date.now()
         };
-        await this.uploadProfileToCloud(payload);
+        await this.uploadProfileToCloud(payload, scheduledUserId, scheduledGeneration);
         this.setSyncState("success", "Progress safely synced with Cloud Storage!");
       } catch (e: any) {
         this.setSyncState("error", `Auto-backup failed: ${e.message || e}`);
@@ -688,7 +819,7 @@ class CloudSyncManager {
 
   public async syncCurrentLocalProfileToCloud() {
     const supabase = getSupabase();
-    if (!supabase || !this.userSession?.user || this.isApplyingCloudData) return;
+    if (!supabase || !this.userSession?.user || this.isApplyingCloudData || !this.canPersistPlayerState()) return;
     await this.uploadProfileToCloud(this.getLocalProfileFromStorage());
   }
 
@@ -696,6 +827,10 @@ class CloudSyncManager {
    * Manual Sync push action
    */
   public async manualSyncPush() {
+    if (!this.canPersistPlayerState()) {
+      this.setSyncState("error", "Cloud profile is not hydrated for this account yet.");
+      return;
+    }
     this.setSyncState("syncing", "Pushing local data to cloud...");
     try {
       const local = this.getLocalProfileFromStorage();
@@ -800,6 +935,7 @@ class CloudSyncManager {
    */
   public async handlePostReset() {
     console.log("[Game Reset] Reinitializing live application state to a fresh start.");
+    this.invalidatePlayerOperations();
     this.isApplyingCloudData = true; // suppress uploads during the transition
     purgePlayerScopedStorage();
     this.stateResetCallback?.();

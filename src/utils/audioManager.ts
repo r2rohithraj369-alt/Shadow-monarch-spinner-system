@@ -17,6 +17,8 @@ class AudioManager {
   private musicVolume: number = 0.5;
   private effectsVolume: number = 0.7;
   private isMuted: boolean = false;
+  /** SYSTEM SOUNDS preference (persisted, default ON). */
+  private systemSoundsEnabled: boolean = true;
 
   // Ambient Synthesizer States
   private ambientOscs: { osc: OscillatorNode; gain: GainNode }[] = [];
@@ -42,6 +44,7 @@ class AudioManager {
         this.musicVolume = data.musicVolume !== undefined ? data.musicVolume : 0.5;
         this.effectsVolume = data.effectsVolume !== undefined ? data.effectsVolume : 0.7;
         this.isMuted = data.isMuted !== undefined ? data.isMuted : false;
+        this.systemSoundsEnabled = data.systemSoundsEnabled !== undefined ? data.systemSoundsEnabled : true;
       }
     } catch (e) {
       console.warn("Could not read audio settings from storage", e);
@@ -60,6 +63,7 @@ class AudioManager {
           musicVolume: this.musicVolume,
           effectsVolume: this.effectsVolume,
           isMuted: this.isMuted,
+          systemSoundsEnabled: this.systemSoundsEnabled,
         })
       );
     } catch (e) {
@@ -168,7 +172,31 @@ class AudioManager {
       musicVolume: this.musicVolume,
       effectsVolume: this.effectsVolume,
       isMuted: this.isMuted,
+      systemSoundsEnabled: this.systemSoundsEnabled,
     };
+  }
+
+  /** Master mute state (consumed by the Monarch sound manager). */
+  public isMuted(): boolean {
+    return this.isMuted;
+  }
+
+  public getMasterVolume(): number {
+    return this.masterVolume;
+  }
+
+  public getEffectsVolume(): number {
+    return this.effectsVolume;
+  }
+
+  /** SYSTEM SOUNDS preference (persisted; default ON). */
+  public isSystemSoundsEnabled(): boolean {
+    return this.systemSoundsEnabled;
+  }
+
+  public setSystemSoundsEnabled(enabled: boolean): void {
+    this.systemSoundsEnabled = enabled;
+    this.saveSettings();
   }
 
   // Create feedback delay line for spacious high-fidelity sound textures

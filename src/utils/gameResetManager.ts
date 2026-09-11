@@ -267,6 +267,7 @@ export function buildResetProfile(
     recentlyGeneratedQuestIds: [],
     questRotationSeed: null,
     evolutionHistory: [],
+    resetGeneration: Number(previousProfile?.resetGeneration || 0) + 1,
     updated_at: Date.now(),
   };
 }
@@ -405,6 +406,29 @@ export async function performGameReset(
   if (!supabase) {
     return { success: false, error: "Supabase is not available. Cannot perform reset." };
   }
+  const activeUserId = (await supabase.auth.getUser()).data.user?.id;
+  if (activeUserId !== userId) {
+    return { success: false, error: "Authenticated user changed before reset could begin." };
+  }
+
+  // The production path is a server-side transaction: profile reset, reset
+  // counter increment and evolution-history deletion either all commit or all
+  // roll back. Do not fall back to a partial client-side sequence.
+  let localQuestDatabase: any[] = [];
+  let localPressureDatabase: any[] = [];
+  try { localQuestDatabase = JSON.parse(localStorage.getItem("monarch_quest_db_v1") || "[]"); } catch { /* global library unavailable */ }
+  try { localPressureDatabase = JSON.parse(localStorage.getItem("monarch_pressure_db_v1") || "[]"); } catch { /* global library unavailable */ }
+  const resetTemplate = buildResetProfile(null, localQuestDatabase, localPressureDatabase);
+  onProgress?.("Resetting authoritative cloud profile...");
+  const { error } = await supabase.rpc("perform_full_game_reset", { reset_profile: resetTemplate });
+  if (error) {
+    return { success: false, error: `Authoritative reset failed: ${error.message || error}` };
+  }
+  purgePlayerScopedStorage();
+  onProgress?.("Reset complete.");
+  return { success: true };
+
+  /* Legacy test-only core remains below for isolated unit tests. */
   console.log(`[RESET] Full Game Reset START for user ${userId.slice(0, 8)}…`);
   const result = await performGameResetCore(supabase, userId, onProgress);
   console.log(
