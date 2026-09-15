@@ -82,6 +82,14 @@ check("ACCOUNT reset clears histories and pending quests", resetProfile.evolutio
 check("ACCOUNT reset preserves permanent quest library", resetProfile.questDatabase.some((quest: any) => quest.id === "permanent-1"));
 __resetBootOwnershipForTests();
 
+const resetRepairSql = fs.readFileSync(
+  path.join(process.cwd(), "supabase", "migrations", "20260915_repair_evolution_history_and_reset.sql"),
+  "utf8"
+);
+check("RESET repair creates the real Battle Report relation before the RPC", resetRepairSql.indexOf("create table if not exists public.evolution_history") < resetRepairSql.indexOf("create or replace function public.perform_full_game_reset"));
+check("RESET repair deletes only the authenticated user's reports", /delete from public\.evolution_history\s+where user_id = v_user_id/i.test(resetRepairSql));
+check("RESET repair preserves permanent quest data", /'questDatabase', coalesce\(v_previous->'questDatabase'/i.test(resetRepairSql));
+
 // ---------------- BUG 1: BULK QUEST COMPILER ----------------
 const bulkText = [
   "Title: The Length Funnel",

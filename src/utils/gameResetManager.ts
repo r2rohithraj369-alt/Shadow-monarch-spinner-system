@@ -66,8 +66,8 @@ function classifyCounterError(error: any): { code: string; message: string } {
       code: "TABLE_MISSING",
       message:
         "The 'game_resets' table does not exist in the live Supabase database. " +
-        "Run supabase/migrations/20260908_player_isolation_and_reset.sql then " +
-        "supabase/migrations/20260910_full_game_reset_limit_5.sql in the Supabase SQL Editor.",
+        "Run supabase/migrations/20260915_repair_evolution_history_and_reset.sql " +
+        "after the player isolation migrations in the Supabase SQL Editor.",
     };
   }
   if (code === "42501" || /row-level security/i.test(raw)) {
