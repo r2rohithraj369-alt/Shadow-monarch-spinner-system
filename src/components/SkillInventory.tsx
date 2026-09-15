@@ -1004,7 +1004,7 @@ export default function SkillInventory({
 
                               <div className="space-y-1">
                                 <h5 className="font-bold font-mono text-gray-200 text-xs tracking-wide">{quest.name}</h5>
-                                <div className="text-[10px] text-gray-400 font-sans leading-relaxed bg-black/30 p-2 rounded border border-gray-950/50">
+                                <div className="text-[10px] text-gray-400 font-sans leading-relaxed bg-black/30 p-2 rounded border border-gray-950/50 whitespace-pre-wrap">
                                   <strong className="text-cyan-400 font-mono block text-[9.5px] uppercase tracking-wider mb-0.5">Objectives & Context:</strong>
                                   {quest.description}
                                 </div>

@@ -3,6 +3,7 @@ import {
   purgePlayerScopedStorage,
   getLastUserId,
   setLastUserId,
+  getPlayerHistoryCacheKey,
 } from "./playerStorage";
 import { Capacitor } from "@capacitor/core";
 import { App as CapApp } from "@capacitor/app";
@@ -147,11 +148,8 @@ class CloudSyncManager {
    */
   public registerEvolutionHistoryUpdater(callback: (records: any[]) => void) {
     this.evolutionHistoryUpdaterCallback = callback;
-    // Push the current known state (if any) to the fresh consumer.
-    if (this.evolutionHistoryStatusValue !== "error") {
-      const stored = readLocalHistoryCache();
-      if (stored.length > 0) callback(stored);
-    }
+    // Do not publish any cache before authenticated ownership is established.
+    // The current user's cloud hydration publishes the authoritative records.
   }
 
   /** Register a listener for the dedicated evolution-history cloud status. */
@@ -499,12 +497,12 @@ class CloudSyncManager {
 
     const local = this.getLocalProfileFromStorage();
     const localHistory = normalizeHistoryRecords(
-      Array.isArray(local.evolutionHistory) ? local.evolutionHistory : readLocalHistoryCache()
+      Array.isArray(local.evolutionHistory) ? local.evolutionHistory : readLocalHistoryCache(userId)
     );
     const merged = mergeHistoryRecords(fetchRes.records, localHistory);
 
     // Persist the merged view to the local cache + React state.
-    writeLocalHistoryCache(merged);
+    writeLocalHistoryCache(merged, userId);
     this.evolutionHistoryUpdaterCallback?.(merged);
 
     // Append any local-only records (offline completions) to the table.
@@ -550,7 +548,7 @@ class CloudSyncManager {
     const audioSettings = this.readJsonObject("monarch_sys_audio_settings");
     let evolutionHistory: any[] = [];
     try {
-      const savedHist = localStorage.getItem("monarch_evolution_history_v5");
+      const savedHist = localStorage.getItem(getPlayerHistoryCacheKey(this.userSession?.user?.id));
       evolutionHistory = savedHist ? JSON.parse(savedHist) : [];
     } catch (e) {
       evolutionHistory = [];
@@ -698,7 +696,10 @@ class CloudSyncManager {
       localStorage.setItem("monarch_sys_audio_settings", JSON.stringify(profile.audioSettings));
     }
     if (profile.evolutionHistory) {
-      localStorage.setItem("monarch_evolution_history_v5", JSON.stringify(normalizeHistoryRecords(profile.evolutionHistory)));
+      const ownerId = this.userSession?.user?.id;
+      if (ownerId) {
+        localStorage.setItem(getPlayerHistoryCacheKey(ownerId), JSON.stringify(normalizeHistoryRecords(profile.evolutionHistory)));
+      }
     }
     localStorage.setItem("monarch_sync_updated_at", (profile.updated_at || Date.now()).toString());
 

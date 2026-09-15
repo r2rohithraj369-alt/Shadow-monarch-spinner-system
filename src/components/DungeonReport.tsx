@@ -1206,7 +1206,7 @@ export default function DungeonReport({
                     </div>
                   </div>
                   
-                  <p className="text-[10px] text-gray-400 leading-relaxed font-sans border-t border-purple-500/10 pt-2">
+                  <p className="text-[10px] text-gray-400 leading-relaxed font-sans border-t border-purple-500/10 pt-2 whitespace-pre-wrap">
                     {activePracticeQuest.description}
                   </p>
 

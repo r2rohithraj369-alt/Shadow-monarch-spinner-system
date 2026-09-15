@@ -730,6 +730,14 @@ export class QuestDatabaseManager {
     return analyzed;
   }
 
+  static validateQuest(quest: CustomQuest): CustomQuest {
+    const errors = validateQuestDefinition(quest);
+    if (errors.length > 0) {
+      throw new Error(errors.join(" "));
+    }
+    return quest;
+  }
+
   // Delete Quest
   static deleteQuest(id: string) {
     const quests = this.getQuests().filter((q) => q.id !== id);

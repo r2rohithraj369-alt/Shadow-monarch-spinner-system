@@ -29,6 +29,7 @@ export const PLAYER_SCOPED_KEYS: string[] = [
   "monarch_recently_generated_quest_ids_v10",
   "monarch_quest_rotation_seed_v10",
   "monarch_evolution_history_v5",
+  "monarch_evolution_history_migration_v1",
   "monarch_sync_updated_at",
 ];
 
@@ -53,7 +54,16 @@ const LAST_USER_KEY = "monarch_last_user_id";
 /** Remove every player-owned localStorage key. Global data is preserved. */
 export function purgePlayerScopedStorage(): string[] {
   const purged: string[] = [];
-  PLAYER_SCOPED_KEYS.forEach((key) => {
+  const keys = new Set(PLAYER_SCOPED_KEYS);
+  try {
+    for (let index = 0; index < localStorage.length; index += 1) {
+      const key = localStorage.key(index);
+      if (key?.startsWith("monarch_evolution_history_v5_")) keys.add(key);
+    }
+  } catch {
+    // Storage unavailable — static keys are still attempted below.
+  }
+  Array.from(keys).forEach((key) => {
     try {
       if (localStorage.getItem(key) !== null) purged.push(key);
       localStorage.removeItem(key);
@@ -228,4 +238,8 @@ export function resolveBootOwnership(): BootOwnershipResult {
 export function isLocalDataOwnedByDifferentUser(userId: string): boolean {
   const last = getLastUserId();
   return hasLocalPlayerData() && last !== null && last !== userId;
+}
+
+export function getPlayerHistoryCacheKey(userId: string | null | undefined): string {
+  return userId ? `monarch_evolution_history_v5_${userId}` : "monarch_evolution_history_v5";
 }

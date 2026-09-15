@@ -44,7 +44,7 @@ import QuestDatabase from "./components/QuestDatabase";
 import { QuestDatabaseManager } from "./utils/questDatabaseManager";
 import { cloudSync, UnifiedProfile, SyncState } from "./utils/cloudSyncManager";
 import { getSupabase } from "./utils/supabaseClient";
-import { resolveBootOwnership, getPersistedSupabaseUserId, setLastUserId, GUEST_USER_ID, purgePlayerScopedStorage } from "./utils/playerStorage";
+import { resolveBootOwnership, getPersistedSupabaseUserId, getLastUserId, getPlayerHistoryCacheKey, setLastUserId, GUEST_USER_ID, purgePlayerScopedStorage } from "./utils/playerStorage";
 import CloudPortalAccess from "./components/CloudPortalAccess";
 import PlayerAvatar from "./components/PlayerAvatar";
 import appLogo from "./assets/images/app_logo_1782646701079.jpg";
@@ -138,7 +138,7 @@ export function getAscensionRequirementsForNextRank(nextRank: string): { propose
 
 
 // DEFAULT COGNITIVE GRID VALUES
-const INITIAL_PLAYER: PlayerProfile = {
+export const INITIAL_PLAYER: PlayerProfile = {
   name: "ROHITH RAJ",
   title: "E-Rank Rookie",
   level: 0,
@@ -169,7 +169,7 @@ const INITIAL_PLAYER: PlayerProfile = {
 
 const INITIAL_ATTRIBUTES: Attribute[] = AttributeEngine.createInitialAttributes();
 
-const INITIAL_SKILLS: SkillItem[] = [
+export const INITIAL_SKILLS: SkillItem[] = [
   {
     id: "s1",
     name: "LEG BREAK",
@@ -222,7 +222,7 @@ const INITIAL_SKILLS: SkillItem[] = [
   },
 ];
 
-const INITIAL_DIRECTIVES: SystemDirective[] = [
+export const INITIAL_DIRECTIVES: SystemDirective[] = [
   {
     id: "d1",
     category: "EVOLUTION",
@@ -608,9 +608,9 @@ export function loadAllQuestsCombined(): PracticeQuest[] {
 }
 
 
-const INITIAL_DUNGEONS: DungeonRecord[] = [];
+export const INITIAL_DUNGEONS: DungeonRecord[] = [];
 
-const INITIAL_LOGS: EvolutionLogEntry[] = [
+export const INITIAL_LOGS: EvolutionLogEntry[] = [
   { id: "l1", timestamp: "10:15", date: "2026-06-02", title: "Monarch Core Initialized", description: "Holographic operating system synthesized for Rohith Raj.", severity: "epic", category: "system" },
   { id: "l2", timestamp: "11:32", date: "2026-06-02", title: "Level 12 Threshold Synchronized", description: "Successfully registered as active club-division shadow spinner.", severity: "success", category: "quest" },
   { id: "l3", timestamp: "14:22", date: "2026-06-02", title: "Slider Trajectory Alert", description: "AI detected inconsistent wrist alignment at release. Under-spin detected.", severity: "warning", category: "warning" },
@@ -1120,7 +1120,7 @@ export default function App() {
 
   const [evolutionHistory, setEvolutionHistory] = useState<any[]>(() => {
     try {
-      const saved = usePlayerCacheOnBoot ? localStorage.getItem("monarch_evolution_history_v5") : null;
+      const saved = usePlayerCacheOnBoot ? localStorage.getItem(getPlayerHistoryCacheKey(getLastUserId())) : null;
       return saved ? JSON.parse(saved) : [];
     } catch {
       return [];
@@ -1159,6 +1159,7 @@ export default function App() {
   const [activePracticeQuestId, setActivePracticeQuestId] = useState<string | null>(() => {
     return usePlayerCacheOnBoot ? localStorage.getItem("monarch_active_practice_quest_id_v10") || null : null;
   });
+  const [playerStateEpoch, setPlayerStateEpoch] = useState(0);
 
   const [activePressureScenarioId, setActivePressureScenarioId] = useState<string | null>(null);
   const [activePressureScenario, setActivePressureScenario] = useState<any | null>(null);
@@ -1275,6 +1276,7 @@ export default function App() {
     // genuine starting state on logout, account switch, or full game reset so
     // no previous player's data can survive in memory.
     cloudSync.registerStateReset(() => {
+      setPlayerStateEpoch((epoch) => epoch + 1);
       setPlayer({ ...INITIAL_PLAYER });
       setAttributes(AttributeEngine.ensureCompleteAttributes(INITIAL_ATTRIBUTES));
       setSkills(INITIAL_SKILLS.map((s) => ({ ...s, history: [...s.history] })));
@@ -1283,7 +1285,7 @@ export default function App() {
       setLogs(INITIAL_LOGS.map((l) => ({ ...l })));
       setEvolutionHistory([]);
       setAiAnalysis(null);
-      setActiveQuestId("d1");
+      setActiveQuestId(null);
       setPracticeQuests([]);
       setActivePracticeQuestId(null);
       setCompletedQuestIds([]);
@@ -1315,7 +1317,7 @@ export default function App() {
         dungeons: [],
         logs: INITIAL_LOGS.map((l) => ({ ...l })),
         aiAnalysis: null,
-        activeQuestId: "d1",
+        activeQuestId: null,
         practiceQuests: [],
         questDatabase: localLibrary.questDatabase || [],
         pressureScenarios: localLibrary.pressureScenarios || [],
@@ -1452,7 +1454,8 @@ export default function App() {
     // the chamber / profile sync and could flush valid cloud history.
     const historyHydrated = isLoggedIn && !isGuest ? cloudSync.isBootHydrated() : true;
     if (evolutionHistory.length > 0 || historyHydrated) {
-      localStorage.setItem("monarch_evolution_history_v5", JSON.stringify(evolutionHistory));
+      const ownerId = getLastUserId();
+      if (ownerId) localStorage.setItem(getPlayerHistoryCacheKey(ownerId), JSON.stringify(evolutionHistory));
     }
     localStorage.setItem("monarch_completed_quest_ids_v10", JSON.stringify(completedQuestIds));
     localStorage.setItem("monarch_failed_quest_ids_v10", JSON.stringify(failedQuestIds));
@@ -3446,7 +3449,7 @@ export default function App() {
                                           )}
                                         </div>
                                         <h5 className="text-[12.5px] font-extrabold text-gray-100 uppercase font-mono tracking-wide group-hover:text-purple-300 transition-colors">{quest.name}</h5>
-                                        <p className="text-[11px] text-gray-400 font-sans leading-relaxed">{quest.description}</p>
+                                        <p className="text-[11px] text-gray-400 font-sans leading-relaxed whitespace-pre-wrap">{quest.description}</p>
                                         
                                         {/* Actions: Reroll and Delete */}
                                         <div className="flex items-center gap-2 pt-1.5 opacity-80 hover:opacity-100 transition-opacity">
@@ -3502,6 +3505,7 @@ export default function App() {
                   {/* TAB 2: EVOLUTION CHAMBER (BALL METHOD LOGGER) */}
                   {activeTab === "EVOLUTION_CHAMBER" && (
                     <EvolutionChamber 
+                      resetEpoch={playerStateEpoch}
                       skills={skills} 
                       practiceQuests={practiceQuests}
                       activePracticeQuestId={activePracticeQuestId}
@@ -3599,6 +3603,18 @@ export default function App() {
                     <QuestDatabase
                       onRefreshDirectives={() => setPracticeQuests(loadAllQuestsCombined())}
                       onNavigateToTab={handleTabSwitch}
+                      onDeployAndTrain={(deployedQuest) => {
+                        setPracticeQuests((prev) => [
+                          deployedQuest,
+                          ...prev.filter((quest) => quest.id !== deployedQuest.id),
+                        ]);
+                        setActivePracticeQuestId(deployedQuest.id);
+                        localStorage.setItem("monarch_practice_quests_v10", JSON.stringify([
+                          deployedQuest,
+                          ...loadAllQuestsCombined().filter((quest) => quest.id !== deployedQuest.id),
+                        ]));
+                        handleTabSwitch("EVOLUTION_CHAMBER");
+                      }}
                       skills={skills}
                     />
                   )}

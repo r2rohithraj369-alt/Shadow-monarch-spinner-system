@@ -27,6 +27,12 @@ const {
   deriveBallProgress,
   isCompleteBallRecord,
 } = await import("../src/utils/chamberBallLedger");
+const {
+  getPlayerHistoryCacheKey,
+  purgePlayerScopedStorage,
+  __resetBootOwnershipForTests,
+} = await import("../src/utils/playerStorage");
+const { buildResetProfile } = await import("../src/utils/gameResetManager");
 
 function makeQuest(reqOverride: Partial<PracticeQuest["requirements"]> = {}, questOverride: Partial<PracticeQuest> = {}): PracticeQuest {
   return {
@@ -60,6 +66,21 @@ function check(name: string, cond: boolean, detail = "") {
   if (!cond) failedCount++;
   console.log(`${cond ? "PASS" : "FAIL"}  ${name}${detail ? "  => " + detail : ""}`);
 }
+
+// ---------------- ACCOUNT ISOLATION / RESET ----------------
+localStorage.setItem(getPlayerHistoryCacheKey("account-a"), JSON.stringify([{ id: "a-report" }]));
+localStorage.setItem(getPlayerHistoryCacheKey("account-b"), JSON.stringify([{ id: "b-report" }]));
+purgePlayerScopedStorage();
+check("ACCOUNT history caches purge on transition", !localStorage.getItem(getPlayerHistoryCacheKey("account-a")) && !localStorage.getItem(getPlayerHistoryCacheKey("account-b")));
+const resetProfile = buildResetProfile(
+  { questDatabase: [{ id: "permanent-1" }], pressureScenarios: [{ scenarioId: "pressure-1" }], resetGeneration: 3 },
+  [{ id: "local-library-1" }],
+  [{ scenarioId: "local-pressure-1" }]
+);
+check("ACCOUNT reset restores default progression and clears active state", resetProfile.player?.xp === 0 && resetProfile.player?.level === 0 && resetProfile.attributes.every((attribute: any) => attribute.value === 0) && resetProfile.activeQuestId === null && resetProfile.activePracticeQuestId === null);
+check("ACCOUNT reset clears histories and pending quests", resetProfile.evolutionHistory.length === 0 && resetProfile.practiceQuests.length === 0);
+check("ACCOUNT reset preserves permanent quest library", resetProfile.questDatabase.some((quest: any) => quest.id === "permanent-1"));
+__resetBootOwnershipForTests();
 
 // ---------------- BUG 1: BULK QUEST COMPILER ----------------
 const bulkText = [
@@ -95,6 +116,15 @@ const bulkText = [
 
 const parsed = parseBulkQuestsTextCore(bulkText, []);
 check("BULK 1 quest ready (not 6 per Ball lines)", parsed.readyQuests.length === 1, `ready=${parsed.readyQuests.length}`);
+const bulletParsed = parseBulkQuestsTextCore(
+  bulkText.replace(/  Ball ([1-6]):/g, "• Ball $1:"),
+  []
+);
+check(
+  "BULK bullet characters remain description content",
+  bulletParsed.readyQuests.length === 1 && bulletParsed.readyQuests[0].description.includes("• Ball 1:") && bulletParsed.readyQuests[0].description.includes("\n\n"),
+  `ready=${bulletParsed.readyQuests.length}`
+);
 // ---------------- BUG 2: FINAL BALL ----------------
 const sixBall = makeQuest(
   {

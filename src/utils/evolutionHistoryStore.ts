@@ -26,6 +26,8 @@ export const EVOLUTION_HISTORY_TABLE = "evolution_history";
 export const EVOLUTION_HISTORY_LOCAL_KEY = "monarch_evolution_history_v5";
 export const EVOLUTION_HISTORY_MIGRATION_KEY = "monarch_evolution_history_migration_v1";
 
+import { getPlayerHistoryCacheKey } from "./playerStorage";
+
 export type HistorySyncStatus = "idle" | "loading" | "synced" | "error";
 
 /** Minimal supabase-js-like client surface used by this module (testable). */
@@ -222,9 +224,9 @@ export function setMigrationMarker(userId: string, count: number): void {
 }
 
 /** Read the local history cache for the current device. */
-export function readLocalHistoryCache(): any[] {
+export function readLocalHistoryCache(userId?: string | null): any[] {
   try {
-    const raw = localStorage.getItem(EVOLUTION_HISTORY_LOCAL_KEY);
+    const raw = localStorage.getItem(getPlayerHistoryCacheKey(userId));
     const parsed = raw ? JSON.parse(raw) : [];
     return Array.isArray(parsed) ? parsed : [];
   } catch {
@@ -233,9 +235,9 @@ export function readLocalHistoryCache(): any[] {
 }
 
 /** Write the local history cache (kept as fast UI cache only). */
-export function writeLocalHistoryCache(records: any[]): void {
+export function writeLocalHistoryCache(records: any[], userId?: string | null): void {
   try {
-    localStorage.setItem(EVOLUTION_HISTORY_LOCAL_KEY, JSON.stringify(records));
+    localStorage.setItem(getPlayerHistoryCacheKey(userId), JSON.stringify(records));
   } catch {
     // Storage unavailable — the cloud row remains authoritative.
   }

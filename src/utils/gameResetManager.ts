@@ -1,6 +1,7 @@
 import { getSupabase } from "./supabaseClient";
 import { purgePlayerScopedStorage } from "./playerStorage";
 import { AttributeEngine } from "./attributeEngine";
+import { INITIAL_DIRECTIVES, INITIAL_LOGS, INITIAL_PLAYER, INITIAL_SKILLS } from "../App";
 
 /**
  * Game Reset Manager
@@ -246,15 +247,15 @@ export function buildResetProfile(
   }
 
   return {
-    player: null,
+    player: { ...INITIAL_PLAYER },
     // Persist the GENUINE starting attributes: every attribute present with
     // value 0 (identity/order preserved from ATTRIBUTE_IDENTITIES). Never an
     // empty array (which relied on hydration fallbacks) and never index-derived.
     attributes: AttributeEngine.createInitialAttributes(),
-    skills: [],
-    directives: [],
+    skills: INITIAL_SKILLS.map((skill) => ({ ...skill, history: [...skill.history] })),
+    directives: INITIAL_DIRECTIVES.map((directive) => ({ ...directive })),
     dungeons: [],
-    logs: [],
+    logs: INITIAL_LOGS.map((log) => ({ ...log })),
     aiAnalysis: null,
     settings: null,
     activeQuestId: null,

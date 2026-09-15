@@ -459,7 +459,7 @@ export default function SystemDirectives({
                         {isActive && <span className="w-2 h-2 rounded-full bg-rose-500 animate-ping" />}
                       </h3>
                       <p className="text-xs text-gray-400 font-sans leading-relaxed">
-                        {quest.description}
+                        <span className="whitespace-pre-wrap">{quest.description}</span>
                       </p>
                     </div>
 

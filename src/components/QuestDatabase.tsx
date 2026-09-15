@@ -46,10 +46,11 @@ Failure Condition: Attempt Window Exhausted Without Required Successes
 interface QuestDatabaseProps {
   onRefreshDirectives: () => void;
   onNavigateToTab: (tab: string) => void;
+  onDeployAndTrain?: (quest: CustomQuest) => void;
   skills?: any[];
 }
 
-export default function QuestDatabase({ onRefreshDirectives, onNavigateToTab, skills }: QuestDatabaseProps) {
+export default function QuestDatabase({ onRefreshDirectives, onNavigateToTab, onDeployAndTrain, skills }: QuestDatabaseProps) {
   const [activeTab, setActiveTab] = useState<"QUESTS" | "PRESSURE" | "IMPORT_EXPORT" | "STATS">("QUESTS");
 
   // Dynamically compile active skills (core + dynamic variations)
@@ -230,18 +231,26 @@ export default function QuestDatabase({ onRefreshDirectives, onNavigateToTab, sk
   };
 
   const handleDeployQuest = (quest: CustomQuest) => {
+    try {
+      QuestDatabaseManager.validateQuest(quest);
+    } catch (validationError: any) {
+      playSystemError();
+      alert(`Quest rejected by the compiler:\n\n${validationError?.message || validationError}`);
+      return null;
+    }
+
     playSystemDing();
     const allQuests = QuestDatabaseManager.getQuests();
-    const deployedQuest = {
+    const deployedQuest: CustomQuest = {
       ...quest,
-      status: "PENDING" as const,
+      status: "PENDING",
       completed: false,
       attemptsCount: quest.attemptsCount || 0,
-      lastAttemptStatus: quest.lastAttemptStatus || "NONE" as const,
+      lastAttemptStatus: quest.lastAttemptStatus || "NONE",
       targetSuccessCount: quest.targetSuccessCount || quest.requirements?.targetSuccessCount || quest.requirements?.perfectBallsNeeded || quest.requirements?.closeOrBetterNeeded || quest.requirements?.dotBallsNeeded || quest.requirements?.wicketsNeeded,
       maxBalls: quest.maxBalls || quest.requirements?.maxBalls || (Number(quest.overs || quest.requirements?.oversMin || 2) * 6),
-      executionProgress: 0,
-      executionMisses: 0,
+      executionProgress: quest.executionProgress || 0,
+      executionMisses: quest.executionMisses || 0,
     };
     const nextQuests = [deployedQuest, ...allQuests.filter((item) => item.id !== quest.id)];
     QuestDatabaseManager.saveQuests(nextQuests);
@@ -255,6 +264,12 @@ export default function QuestDatabase({ onRefreshDirectives, onNavigateToTab, sk
     ]));
     addRecentLog(`Deployed Quest: ${quest.name}`);
     notifyChanges();
+    return deployedQuest;
+  };
+
+  const handleDeployAndTrain = (quest: CustomQuest) => {
+    const deployedQuest = handleDeployQuest(quest);
+    if (deployedQuest) onDeployAndTrain?.(deployedQuest);
   };
 
   const handleBulkRenameSkill = () => {
@@ -1095,7 +1110,7 @@ export default function QuestDatabase({ onRefreshDirectives, onNavigateToTab, sk
                     {quest.name}
                   </h3>
 
-                  <p className="text-[11px] text-zinc-400 font-sans leading-relaxed line-clamp-2">
+                  <p className="text-[11px] text-zinc-400 font-sans leading-relaxed whitespace-pre-wrap">
                     {quest.description}
                   </p>
 
@@ -1173,9 +1188,16 @@ export default function QuestDatabase({ onRefreshDirectives, onNavigateToTab, sk
                   <button
                     onClick={(e) => { e.stopPropagation(); handleDeployQuest(quest); }}
                     className="px-2 py-1.5 bg-emerald-950/30 hover:bg-emerald-900/40 border border-emerald-500/20 hover:border-emerald-500/40 text-emerald-300 rounded-lg transition-all cursor-pointer text-[9px] font-mono font-bold uppercase"
-                    title="Send this quest directly to Pending Skill Quests"
+                    title="Send this quest to Pending Skill Quests"
                   >
-                    Deploy Quest
+                    Deploy
+                  </button>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); handleDeployAndTrain(quest); }}
+                    className="px-2 py-1.5 bg-cyan-950/30 hover:bg-cyan-900/40 border border-cyan-500/20 hover:border-cyan-500/40 text-cyan-300 rounded-lg transition-all cursor-pointer text-[9px] font-mono font-bold uppercase"
+                    title="Deploy this quest and open it in the Evolution Chamber"
+                  >
+                    Deploy &amp; Train
                   </button>
                   <button
                     onClick={(e) => { e.stopPropagation(); handleDeleteQuest(quest.id, quest.name); }}
@@ -2792,7 +2814,7 @@ Objectives: Keep run rate below 6.5.`);
 
                   <div className="space-y-1">
                     <span className="text-[10px] text-zinc-500 uppercase font-black tracking-wider">Objectives Narrative</span>
-                    <p className="p-3 bg-black/60 rounded-xl text-zinc-300 leading-relaxed font-sans text-[11px] border border-zinc-900">
+                    <p className="p-3 bg-black/60 rounded-xl text-zinc-300 leading-relaxed font-sans text-[11px] border border-zinc-900 whitespace-pre-wrap">
                       "{previewItem.objectivesText || previewItem.description}"
                     </p>
                   </div>

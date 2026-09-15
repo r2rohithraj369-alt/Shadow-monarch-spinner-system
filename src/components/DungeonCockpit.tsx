@@ -324,7 +324,7 @@ export default function DungeonCockpit({
               <h4 className="text-[11px] font-bold text-white uppercase leading-tight">
                 {activePracticeQuest.name}
               </h4>
-              <p className="text-[9px] text-gray-400 leading-snug font-sans">
+              <p className="text-[9px] text-gray-400 leading-snug font-sans whitespace-pre-wrap">
                 {activePracticeQuest.description}
               </p>
               
