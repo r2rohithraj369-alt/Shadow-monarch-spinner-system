@@ -1525,7 +1525,7 @@ export default function App() {
       skillLevelWatchInitRef.current = true;
       return;
     }
-    const prevSkills = Object.entries(prevMap).map(([id, level]) => ({ id, level }));
+    const prevSkills = Object.entries(prevMap).map(([id, level]) => ({ id, level: level as number }));
     const events = detectSkillLevelUps(currentNotificationOwner(), prevSkills, skills);
     skillsLevelRef.current = nextMap;
     if (cloudSync.isApplyingCloudDataNow()) return; // hydration echo — silent

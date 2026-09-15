@@ -13,6 +13,14 @@ import {
 } from "../src/utils/questCore";
 import { computePlayerAnalytics, PlayerAnalyticsSources } from "../src/utils/playerAnalytics";
 import {
+  BallOutcome,
+  CompletedDelivery,
+  QuestExecutionStatus,
+  deriveBallProgress,
+  finalizeBall,
+  isCompleteBallRecord,
+} from "../src/utils/chamberBallLedger";
+import {
   validateResetPhrase,
   validateConfirmationPhrase,
   canReset,
@@ -744,23 +752,192 @@ console.log("\n=== EVOLUTION CHAMBER FINAL BALL (6-BALL QUEST, TWO-STAGE COMPLET
   assert("FB6 PERFECT BALL qualifies regardless of the execution assessment", isQualifyingDelivery(makeQuest().requirements!, perfect) === true);
 }
 
-// SOURCE GUARD: session conclusion must be gated on the final ball being FULLY
-// resolved (landing outcome + EXECUTED/MISSED both recorded). The chamber must
-// NEVER close at the wrap ball while its assessment is still pending.
+// SOURCE GUARD: the session must be concluded from ATOMICALLY FINALIZED ball
+// records only. A ball enters the ledger through the single finalizeBall()
+// path — skill + length + EXECUTED/MISSED + outcome — and can never be patched
+// with an execution assessment after it has already been counted.
 {
   const chamberPath = path.join(process.cwd(), "src", "components", "EvolutionChamber.tsx");
   const src = fs.readFileSync(chamberPath, "utf8");
-  assert("FB7 Final-ball wrap conclusion gated on awaitsFinalQuestAssessment", /awaitsFinalQuestAssessment/.test(src) && /if \(!awaitsFinalQuestAssessment\)/.test(src));
   assert(
-    "FB8 EXECUTED/MISSED requires a logged, unassessed delivery (landing recorded first)",
-    /lastAssessedQuestDelivery\s*>=\s*deliveryLogs\.length\s*\)\s*return/.test(src)
+    "FB7 Ball finalization uses the single atomic finalizeBall + deriveBallProgress path",
+    /finalizeBall\(/.test(src) && /deriveBallProgress\(/.test(src)
+  );
+  assert(
+    "FB8 The finalized ball is appended to the ledger exactly once",
+    /const nextDeliveryLogs = \[\.\.\.deliveryLogs, finalizedDelivery\]/.test(src) &&
+      !/setDeliveryLogs\(\[\.\.\.deliveryLogs,/.test(src)
   );
   assert("FB9 Final ball authoritative closer uses evaluateFinalQuestResult", /evaluateFinalQuestResult\(activePracticeQuest,\s*livePerf\)/.test(src));
   assert("FB10 Landing outcome selection mandatory before logging a delivery", /if \(!selectedLengthMetric\)/.test(src));
+  assert(
+    "FB11 No post-hoc execution patching of an already-counted ball",
+    !/manualQuestProgress|lastAssessedQuestDelivery|markQuestExecution/.test(src)
+  );
+  assert(
+    "FB12 Session conclusion guarded on complete ball records",
+    /completedBalls !== logsToUse\.length/.test(src) || /isCompleteBallRecord/.test(src)
+  );
+  assert(
+    "FB13 EXECUTED/MISSED is mandatory (never inferred) before finalizing a ball",
+    /executionAssessmentRequired && !isQuestExecutionStatus\(ballExecutionDraft\)/.test(src)
+  );
+}
+
+// ============================================================
+// BEHAVIOURAL REGRESSION — 6-BALL BALL-COUNT / EXECUTION-COUNT BUG
+// "6 balls logged BUT only 5 executed" must be impossible.
+// ============================================================
+console.log("\n=== EVOLUTION CHAMBER — ATOMIC BALL FINALIZATION (6-BALL FLOW) ===");
+{
+  const outcome = (runs = 0, wicket = false): BallOutcome => ({
+    isExtra: false,
+    extraType: "NONE",
+    runsConceded: runs,
+    isWicket: wicket,
+    wicketType: wicket ? "BOWLED" : "NONE",
+  });
+  const makeDraft = (executionStatus: QuestExecutionStatus | null, length = "Perfect Ball") => ({
+    skillId: "s1",
+    skillName: "Leg Break",
+    length,
+    executionStatus,
+    outcome: outcome(),
+  });
+  const perBallDraft = (executionStatus: QuestExecutionStatus | null, ball: number) =>
+    finalizeBall(makeDraft(executionStatus), {
+      over: 1,
+      ballNum: ball,
+      xp: 35,
+      requireExecution: true,
+      assessedAt: `2026-01-01T00:00:0${ball}.000Z`,
+    });
+
+  const sixBallQuest = makeQuest(
+    {
+      totalBalls: 6,
+      executionRequired: 6,
+      successTarget: 6,
+      qualifyingCondition: "PERFECT_OR_CLOSE",
+      earlyCompletion: false,
+      failureCondition: "WINDOW_EXHAUSTED",
+    },
+    { overs: 1 }
+  );
+  const perfOf = (records: CompletedDelivery[]) => {
+    const p = deriveBallProgress(records, true);
+    return {
+      qualifyingSuccess: records.filter((l) => isQualifyingDelivery(sixBallQuest.requirements!, l)).length,
+      executed: p.executed,
+      missed: p.missed,
+      totalDeliveries: p.completedBalls,
+    };
+  };
+
+  // ---- Case A: all six balls EXECUTED ----
+  let ledger: CompletedDelivery[] = [];
+  for (let ball = 1; ball <= 6; ball++) {
+    const fin = perBallDraft("EXECUTED", ball);
+    assert(`FB14 Ball ${ball} finalizes as ONE complete record`, fin.ok === true);
+    if (!fin.ok) break;
+    ledger = [...ledger, fin.delivery];
+
+    const p = deriveBallProgress(ledger, true);
+    assert(
+      `FB15 Ball ${ball}: completed=${ball} executed=${ball} missed=0`,
+      p.completedBalls === ball && p.executed === ball && p.missed === 0
+    );
+    assert(
+      `FB16 Ball ${ball} record carries skill + length + execution + outcome`,
+      isCompleteBallRecord(fin.delivery, true) === true
+    );
+
+    if (ball < 6) {
+      assert(`FB17 Ball ${ball}: session stays open (live ACTIVE)`, evaluateLiveQuestState(sixBallQuest, perfOf(ledger)).status === "ACTIVE");
+    } else {
+      const perf = perfOf(ledger);
+      // Ball 6 was only appended WITH its execution assessment, so the closer
+      // now sees executed = 6 — never the stale "5".
+      assert("FB18 Ball 6 EXECUTED: finalized ledger reports 6/6 executed", perf.totalDeliveries === 6 && perf.executed === 6 && perf.missed === 0);
+      assert("FB19 Ball 6 EXECUTED: final verdict from all 6 finalized records -> SUCCESS", evaluateFinalQuestResult(sixBallQuest, perf).result === "SUCCESS");
+      assert(
+        "FB19b Final evaluator received all 6 complete ball records",
+        ledger.length === 6 && ledger.every((l) => isCompleteBallRecord(l, true)) && perf.executed === ledger.filter((l) => l.executionStatus === "EXECUTED").length
+      );
+    }
+  }
+}
+
+// ---- Case B: Ball 6 MISSED → completed 6, executed 5, missed 1 ----
+{
+  const outcome: BallOutcome = {
+    isExtra: false,
+    extraType: "NONE",
+    runsConceded: 0,
+    isWicket: false,
+    wicketType: "NONE",
+  };
+  const sixBallQuest = makeQuest(
+    {
+      totalBalls: 6,
+      executionRequired: 6,
+      successTarget: 6,
+      qualifyingCondition: "PERFECT_OR_CLOSE",
+      earlyCompletion: false,
+      failureCondition: "WINDOW_EXHAUSTED",
+    },
+    { overs: 1 }
+  );
+  let mixed: CompletedDelivery[] = [];
+  for (let ball = 1; ball <= 6; ball++) {
+    const fin = finalizeBall(
+      {
+        skillId: "s1",
+        skillName: "Leg Break",
+        length: "Perfect Ball",
+        executionStatus: ball === 6 ? "MISSED" : "EXECUTED",
+        outcome,
+      },
+      { over: 1, ballNum: ball, xp: 35, requireExecution: true, assessedAt: `2026-01-02T00:00:0${ball}.000Z` }
+    );
+    assert(`FB20 Ball ${ball} MISSED-case finalizes as one complete record`, fin.ok === true);
+    if (!fin.ok) break;
+    mixed = [...mixed, fin.delivery];
+  }
+  const p = deriveBallProgress(mixed, true);
+  assert("FB21 Ball 6 MISSED: completed=6, executed=5, missed=1", p.completedBalls === 6 && p.executed === 5 && p.missed === 1);
+  const verdict = evaluateFinalQuestResult(sixBallQuest, {
+    qualifyingSuccess: mixed.filter((l) => isQualifyingDelivery(sixBallQuest.requirements!, l)).length,
+    executed: p.executed,
+    missed: p.missed,
+    totalDeliveries: p.completedBalls,
+  });
+  assert("FB22 Ball 6 MISSED: verdict derived from executed=5 (execution gate unmet)", verdict.result === "FAILED");
+
+  // ---- Case C: an unassessed ball can never enter a quest ledger ----
+  const blocked = finalizeBall(
+    { skillId: "s1", skillName: "Leg Break", length: "Perfect Ball", executionStatus: null, outcome },
+    { over: 1, ballNum: 7, xp: 35, requireExecution: true }
+  );
+  assert("FB23 finalizeBall REJECTS a quest ball with no EXECUTED/MISSED assessment", blocked.ok === false);
+  const unassessed = { ...mixed[0], executionStatus: null };
+  const withUnassessed = deriveBallProgress([...mixed, unassessed], true);
+  assert(
+    "FB24 A logged-but-unassessed record is never a completed ball",
+    isCompleteBallRecord(unassessed, true) === false && withUnassessed.completedBalls === 6 && withUnassessed.pendingExecutionAssessment === 1
+  );
+
+  // ---- Case D: plain training keeps the historical logged-only behaviour ----
+  const plain = finalizeBall(
+    { skillId: "s1", skillName: "Leg Break", length: "Close Ball", executionStatus: null, outcome },
+    { over: 1, ballNum: 1, xp: 25, requireExecution: false }
+  );
+  assert("FB25 Non-quest training ball finalizes without an execution assessment", plain.ok === true && isCompleteBallRecord(plain.delivery, false) === true);
 }
 
 console.log("\n=============================================");
 console.log(`RESULT: ${passed} passed, ${failed} failed`);
+
 if (failures.length > 0) {
   console.log("Failed assertions:");
   failures.forEach((f) => console.log(`  - ${f}`));

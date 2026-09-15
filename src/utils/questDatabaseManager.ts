@@ -202,7 +202,7 @@ const DEFAULT_PRESSURE_SCENARIOS: PressureScenarioData[] = [
   }
 ];
 
-import { parseBulkQuestsTextCore } from "./questBulkCompiler";
+import { parseBulkQuestsTextCore, analyzeAndGenerateQuest } from "./questBulkCompiler";
 export { parseQuestObjectives, analyzeAndGenerateQuest } from "./questBulkCompiler";
 
 // Automatic analysis for Pressure Scenarios

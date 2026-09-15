@@ -1,0 +1,12 @@
+src/App.tsx(1529,68): error TS2345: Argument of type '{ id: string; level: unknown; }[]' is not assignable to parameter of type 'SkillLike[]'.
+  Type '{ id: string; level: unknown; }' is not assignable to type 'SkillLike'.
+    Types of property 'level' are incompatible.
+      Type 'unknown' is not assignable to type 'number'.
+src/monarchEvents/monarchSoundManager.ts(50,28): error TS2341: Property 'isMuted' is private and only accessible within class 'AudioManager'.
+src/monarchEvents/monarchSoundManager.ts(50,28): error TS2349: This expression is not callable.
+  Type 'Boolean' has no call signatures.
+src/utils/audioManager.ts(19,11): error TS2300: Duplicate identifier 'isMuted'.
+src/utils/audioManager.ts(180,10): error TS2300: Duplicate identifier 'isMuted'.
+src/utils/questDatabaseManager.ts(443,25): error TS2552: Cannot find name 'analyzeAndGenerateQuest'. Did you mean 'analyzeAndGeneratePressure'?
+src/utils/questDatabaseManager.ts(716,22): error TS2552: Cannot find name 'analyzeAndGenerateQuest'. Did you mean 'analyzeAndGeneratePressure'?
+__LINT_DONE__

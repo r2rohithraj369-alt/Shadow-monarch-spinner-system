@@ -10,11 +10,20 @@ import {
 } from "lucide-react";
 import { SkillItem, PracticeQuest } from "../types";
 import WagonWheelMap, { getCricketZone, VALUE_COLORS, WagonWheelDeliver } from "./WagonWheelMap";
-import { 
+import {
   playSystemClick, playSystemDing, 
   playSystemQuestComplete, playPortalSwoosh, playSystemError,
   playModalOpen, playModalClose, playDrillSuccess, playDrillFailure, playSimulationRun
 } from "../utils/audio";
+import {
+  BallOutcome,
+  CompletedDelivery,
+  QuestExecutionStatus,
+  deriveBallProgress,
+  finalizeBall,
+  isCompleteBallRecord,
+  isQuestExecutionStatus,
+} from "../utils/chamberBallLedger";
 
 interface EvolutionChamberProps {
   skills: SkillItem[];
@@ -442,32 +451,35 @@ export default function EvolutionChamber({
   // Target quest computed reference
   const activePracticeQuest = practiceQuests.find(q => q.id === activePracticeQuestId) || null;
 
-  // Logging deliveries array
-  interface LoggedDelivery {
-    over: number;
-    ballNum: number;
-    skillId: string;
-    skillName: string;
-    length: string;
-    xp: number;
-    isExtra: boolean;
-    extraType: "WIDE" | "NO_BALL" | "NONE";
-    runsConceded: number;
-    isWicket: boolean;
-    wicketType: string;
-    angle?: number;
-    distance?: number;
-    zone?: string;
-    dotBallType?: "BEATEN" | "FIELDER" | null;
-    beatenType?: string;
-  }
-  const [deliveryLogs, setDeliveryLogs] = useState<LoggedDelivery[]>([]);
-  const [manualQuestProgress, setManualQuestProgress] = useState<{ executed: number; missed: number }>({ executed: 0, missed: 0 });
-  // A delivery may be assessed once only. This prevents a player from repeatedly
-  // pressing Executed for a single ball and makes the manual tracker auditable.
-  const [lastAssessedQuestDelivery, setLastAssessedQuestDelivery] = useState(0);
+  // ###########################################################################
+  // AUTHORITATIVE COMPLETED-BALL LEDGER (CURRENT SESSION ONLY)
+  // ###########################################################################
+  // A ball enters this ledger ONLY through finalizeBall(...) and ONLY once its
+  // four required pieces are complete: skill/variation, length/landing quality,
+  // the EXECUTED/MISSED assessment and the actual ball outcome. Every counter
+  // below is DERIVED from these finalized records, so a logged delivery whose
+  // execution assessment is still missing can never be counted as a completed
+  // ball and can never reach the quest/session completion checks.
+  const [deliveryLogs, setDeliveryLogs] = useState<CompletedDelivery[]>([]);
+  // CURRENT / IN-PROGRESS BALL (currentBallDraft) — everything about the ball
+  // that has NOT been finalized yet. Skill = activeSelectedSkillId, length =
+  // selectedLengthMetric and the outcome = the live outcome controller states;
+  // only the quest execution assessment needs its own draft slot.
+  const [ballExecutionDraft, setBallExecutionDraft] = useState<QuestExecutionStatus | null>(null);
   const [executionResult, setExecutionResult] = useState<"ACTIVE" | "COMPLETED" | "FAILED">("ACTIVE");
   const completionReportedRef = useRef(false);
+
+  // Quest sessions REQUIRE the EXECUTED/MISSED assessment as part of every ball.
+  // Plain training sessions preserve the historical logged-only behaviour, but
+  // an incomplete ball is never treated as a completed one.
+  const executionAssessmentRequired = sessionActive && !!activePracticeQuest;
+  const requiresExecutionForRecords = executionAssessmentRequired;
+  // All ball counters come from the finalized ledger — never from a stale
+  // React state value read after a setState in the same handler.
+  const ballProgress = deriveBallProgress(deliveryLogs, requiresExecutionForRecords);
+  const completedBallsCount = ballProgress.completedBalls;
+  const executedCount = ballProgress.executed;
+  const missedCount = ballProgress.missed;
 
   // ---- CURRENT-SESSION EXECUTION TELEMETRY (TRANSIENT) ----
   // This is the ONLY source for the live "Delivery telemetry" feed shown inside
@@ -535,8 +547,7 @@ export default function EvolutionChamber({
     // otherwise a previous attempt (e.g. Executed = 11, Missed = 1) leaks into
     // the new quest and shows impossible values like "Executed 11/12".
     setDeliveryLogs([]);
-    setManualQuestProgress({ executed: 0, missed: 0 });
-    setLastAssessedQuestDelivery(0);
+    setBallExecutionDraft(null);
     setSessionExecutionHistory([]); // transient telemetry resets with the session
     setExecutionResult(activePracticeQuest.completed ? "COMPLETED" : activePracticeQuest.lastAttemptStatus === "FAILED" ? "FAILED" : "ACTIVE");
     completionReportedRef.current = activePracticeQuest.completed || activePracticeQuest.lastAttemptStatus === "FAILED";
@@ -565,8 +576,7 @@ export default function EvolutionChamber({
       // FRESH TRANSIENT SESSION STATE — a new session ALWAYS starts at zero.
       // Values from a previous quest attempt (executed / missed / qualifying)
       // must never carry into a new session.
-      setManualQuestProgress({ executed: 0, missed: 0 });
-      setLastAssessedQuestDelivery(0);
+      setBallExecutionDraft(null);
       setSessionExecutionHistory([]); // new session ⇒ empty current-session telemetry
       setExecutionResult("ACTIVE");
       completionReportedRef.current = false;
@@ -660,97 +670,50 @@ export default function EvolutionChamber({
     return canon.totalBalls > 0 && canon.successTarget > 0 && canon.qualifyingCondition !== null;
   };
 
-  const markQuestExecution = (result: "EXECUTED" | "MISSED") => {
-    if (!activePracticeQuest || !sessionActive || executionResult !== "ACTIVE" || deliveryLogs.length === 0 || lastAssessedQuestDelivery >= deliveryLogs.length) return;
-    if (manualQuestProgress.executed + manualQuestProgress.missed >= getActiveQuestMaxBalls(activePracticeQuest)) return;
+  // STEP 3 OF THE BALL FLOW — the player EXPLICITLY selects EXECUTED or MISSED.
+  // This only fills the CURRENT-BALL DRAFT: nothing is counted, no over is
+  // advanced and no quest state is touched. The ball is finalized (and appended
+  // to the authoritative ledger) only afterwards, once the outcome has been
+  // recorded, so the execution assessment can never be applied after the ball
+  // has already been counted.
+  const setBallExecutionAssessment = (result: QuestExecutionStatus) => {
+    if (!executionAssessmentRequired || executionResult !== "ACTIVE") return;
     playSystemClick();
-    const nextProgress = {
-      executed: manualQuestProgress.executed + (result === "EXECUTED" ? 1 : 0),
-      missed: manualQuestProgress.missed + (result === "MISSED" ? 1 : 0),
-    };
-    // Persistent quest execution history — accumulates across sessions as a
-    // historical record of the quest (kept intact and never used for the live feed).
-    const history = [
-      ...(activePracticeQuest.executionHistory || []),
-      { ball: ((deliveryLogs.length - 1) % 6) + 1, over: Math.ceil(deliveryLogs.length / 6), result, timestamp: new Date().toISOString() }
-    ];
-    // CURRENT-SESSION telemetry — the live chamber feed. Starts empty per session.
-    setSessionExecutionHistory((prev) => [
-      ...prev,
-      { ball: ((deliveryLogs.length - 1) % 6) + 1, over: Math.ceil(deliveryLogs.length / 6), result, timestamp: new Date().toISOString() }
-    ]);
-    setManualQuestProgress(nextProgress);
-    setLastAssessedQuestDelivery(deliveryLogs.length);
-
-    // Live quest evaluation after EVERY assessment. Qualification is always
-    // derived from actual landing outcomes; the EXECUTED/MISSED assessment only
-    // updates the execution requirement. This is where WINDOW_EXHAUSTED
-    // failure is authoritatively decided (the last ball of the window has now
-    // been assessed, so the execution counts are final).
-    // Structured window quests only — legacy multi-condition quests are
-    // evaluated at window wrap by their own evaluator.
-    onUpdatePracticeQuestProgress(activePracticeQuest.id, {
-      executionProgress: nextProgress.executed,
-      executionMisses: nextProgress.missed,
-      executionHistory: history,
-      lastAttemptStatus: "NONE",
-    });
-
-    if (isStructuredWindowQuest(activePracticeQuest)) {
-      const livePerf = {
-        totalDeliveries: deliveryLogs.length,
-        qualifyingSuccess: computeQualifyingSuccessCount(activePracticeQuest.requirements || {}, deliveryLogs),
-        executed: nextProgress.executed,
-        missed: nextProgress.missed,
-      };
-      const live = evaluateLiveQuestState(activePracticeQuest, livePerf);
-
-      // POST-ASSESSMENT LIVE EVALUATION (authoritative structured logic).
-      if (live.status === "SUCCESS") {
-        setExecutionResult("COMPLETED");
-        handleConcludeSession(deliveryLogs);
-        return;
-      }
-      if (live.status === "FAILED") {
-        setExecutionResult("FAILED");
-        handleConcludeSession(deliveryLogs);
-        return;
-      }
-
-      // FINAL BALL FULLY RESOLVED → authoritative final verdict. The attempt
-      // window is exhausted and every logged delivery now has BOTH required
-      // stages: its landing outcome (recorded when the delivery was logged) and
-      // its EXECUTED/MISSED assessment (applied just above). The live evaluator
-      // deliberately stays ACTIVE here when early completion is disabled, so
-      // evaluateFinalQuestResult is the authoritative closer: finalize the ball,
-      // evaluate the final quest/session result, then end the session. There is
-      // NO path where the session ends while either stage is still missing.
-      if (deliveryLogs.length >= getActiveQuestMaxBalls(activePracticeQuest)) {
-        const finalVerdict = evaluateFinalQuestResult(activePracticeQuest, livePerf);
-        const finalSucceeded = finalVerdict.result === "SUCCESS";
-        setExecutionResult(finalSucceeded ? "COMPLETED" : "FAILED");
-        handleConcludeSession(deliveryLogs);
-        return;
-      }
-    }
+    setBallExecutionDraft(result);
   };
 
+  /**
+   * ATOMIC BALL FINALIZATION — the ONE path by which a ball may enter the
+   * authoritative completed-delivery ledger.
+   *
+   * Enforced order: skill/variation → length/landing → EXECUTED/MISSED →
+   * ball outcome → finalize. All counters (completed balls, executed, missed,
+   * qualification, XP) and the quest/session verdict are derived from
+   * `nextDeliveryLogs` — the ledger INCLUDING the ball being finalized — never
+   * from the previous React state.
+   */
   const handleLogDelivery = () => {
-    if (activePracticeQuest && sessionActive && executionResult === "ACTIVE" && deliveryLogs.length > lastAssessedQuestDelivery) {
-      playSystemError();
-      alert("RECORD EXECUTED OR MISSED FOR THE PREVIOUS DELIVERY BEFORE LOGGING THE NEXT BALL.");
-      return;
-    }
-    if (!selectedLengthMetric) {
-      playSystemError();
-      alert("SELECT THE PITCH DELIVERY LANDING LENGTH FIRST.");
-      return;
-    }
+    // 1. Skill / variation bowled.
     if (!activeSkill) {
       playSystemError();
       alert("SELECT TARGET SPINNER KINETIC VARIATION.");
       return;
     }
+    // 2. Length / landing quality.
+    if (!selectedLengthMetric) {
+      playSystemError();
+      alert("SELECT THE PITCH DELIVERY LANDING LENGTH FIRST.");
+      return;
+    }
+    // 3. EXECUTED / MISSED — mandatory for quest sessions, never inferred.
+    if (executionAssessmentRequired && !isQuestExecutionStatus(ballExecutionDraft)) {
+      playSystemError();
+      alert("SELECT EXECUTED OR MISSED FOR THIS DELIVERY BEFORE FINALIZING THE BALL.");
+      return;
+    }
+    // A concluded attempt can never accept more deliveries.
+    if (activePracticeQuest && sessionActive && executionResult !== "ACTIVE") return;
+    if (activePracticeQuest && sessionActive && completedBallsCount >= getActiveQuestMaxBalls(activePracticeQuest)) return;
 
     // MANDATORY WAGON WHEEL VALIDATIONS IF MATCH SIM OR PRESSURE MODE
     const needsWagonWheel = (isMatchSim || isPressureMode) && (
@@ -793,14 +756,8 @@ export default function EvolutionChamber({
       deliveryRuns = batRuns + extraPenalty;
     }
 
-    // Build the new delivery object
-    const newDelivery: LoggedDelivery = {
-      over: currentOverNumber,
-      ballNum: legalBallsInCurrentOver + 1,
-      skillId: activeSkill.id,
-      skillName: activeSkill.name,
-      length: selectedLengthMetric,
-      xp: ballXp,
+    // STEP 4 — the ACTUAL ball outcome (never inferred by the ledger).
+    const ballOutcome: BallOutcome = {
       isExtra,
       extraType,
       runsConceded: deliveryRuns,
@@ -813,55 +770,112 @@ export default function EvolutionChamber({
       beatenType: (isMatchSim || isPressureMode) && liveOutcome === "DOT" && liveDotType === "BEATEN" ? liveBeatenType : undefined,
     };
 
-    const updatedLogs = [...deliveryLogs, newDelivery];
-    setDeliveryLogs(updatedLogs);
+    // STEP 5 — FINALIZE THE COMPLETE BALL. finalizeBall() validates that the
+    // skill, the landing length, the explicit EXECUTED/MISSED assessment AND the
+    // outcome are ALL present and returns the single complete record. Nothing is
+    // appended and nothing is counted when any piece is missing, which is what
+    // makes "6 logged but only 5 executed" impossible.
+    const finalization = finalizeBall(
+      {
+        skillId: activeSkill.id,
+        skillName: activeSkill.name,
+        length: selectedLengthMetric,
+        executionStatus: executionAssessmentRequired ? ballExecutionDraft : null,
+        outcome: ballOutcome,
+      },
+      {
+        over: currentOverNumber,
+        ballNum: legalBallsInCurrentOver + 1,
+        xp: ballXp,
+        requireExecution: executionAssessmentRequired,
+      }
+    );
 
-    // EARLY SUCCESS / IMPOSSIBLE-STATE handling — derived exclusively from the
-    // canonical structured quest requirements via evaluateLiveQuestState.
-    // Window-exhaustion failures are NOT applied here: the final delivery of
-    // the window may still be awaiting its EXECUTED/MISSED assessment, and the
-    // assessment step (markQuestExecution) performs the authoritative
-    // window-exhausted evaluation with the final execution counts.
-    const willWrap = !isExtra && (legalBallsInCurrentOver + 1) >= 6 && (currentOverNumber + 1) > totalOversGoal;
-    if (!willWrap && activePracticeQuest && sessionActive && isStructuredWindowQuest(activePracticeQuest)) {
+    if (!finalization.ok) {
+      playSystemError();
+      alert(finalization.error);
+      return;
+    }
+
+    const finalizedDelivery = finalization.delivery;
+
+    // ONE append. Every value below is derived from the ledger INCLUDING the
+    // ball just finalized — never from the previous React state.
+    const nextDeliveryLogs = [...deliveryLogs, finalizedDelivery];
+    const nextProgress = deriveBallProgress(nextDeliveryLogs, requiresExecutionForRecords);
+    setDeliveryLogs(nextDeliveryLogs);
+    setBallExecutionDraft(null);
+
+    // Execution counters / persistent quest history — updated EXACTLY ONCE per
+    // finalized ball, straight from that same finalized record.
+    if (executionAssessmentRequired && activePracticeQuest && finalizedDelivery.executionStatus) {
+      const executionEntry = {
+        ball: finalizedDelivery.ballNum,
+        over: finalizedDelivery.over,
+        result: finalizedDelivery.executionStatus,
+        timestamp: finalizedDelivery.executionAssessedAt || new Date().toISOString(),
+      };
+      // CURRENT-SESSION telemetry — the live chamber feed.
+      setSessionExecutionHistory((prev) => [...prev, executionEntry]);
+      // Persistent quest history — accumulates across sessions as a record.
+      onUpdatePracticeQuestProgress(activePracticeQuest.id, {
+        executionProgress: nextProgress.executed,
+        executionMisses: nextProgress.missed,
+        executionHistory: [...(activePracticeQuest.executionHistory || []), executionEntry],
+        lastAttemptStatus: "NONE",
+      });
+    }
+
+    // LIVE QUEST PROGRESSION — evaluated from the finalized ledger only.
+    if (activePracticeQuest && sessionActive && isStructuredWindowQuest(activePracticeQuest)) {
       const livePerf = {
-        totalDeliveries: updatedLogs.length,
-        qualifyingSuccess: computeQualifyingSuccessCount(activePracticeQuest.requirements || {}, updatedLogs),
-        executed: manualQuestProgress.executed,
-        missed: manualQuestProgress.missed,
+        totalDeliveries: nextProgress.completedBalls,
+        qualifyingSuccess: computeQualifyingSuccessCount(activePracticeQuest.requirements || {}, nextDeliveryLogs),
+        executed: nextProgress.executed,
+        missed: nextProgress.missed,
       };
       const live = evaluateLiveQuestState(activePracticeQuest, livePerf);
       if (live.status === "SUCCESS") {
         // OBJECTIVE COMPLETE — conclude the session successfully.
         setExecutionResult("COMPLETED");
-        handleConcludeSession(updatedLogs);
+        handleConcludeSession(nextDeliveryLogs);
         return;
       }
-      if (live.status === "FAILED" && live.isImpossible) {
-        // Success is now mathematically impossible with the remaining attempts.
+      if (live.status === "FAILED") {
+        // Impossible state OR an explicit failure condition — decided on the
+        // complete ball that was just finalized.
         setExecutionResult("FAILED");
-        handleConcludeSession(updatedLogs);
+        handleConcludeSession(nextDeliveryLogs);
+        return;
+      }
+
+      // FINAL BALL → authoritative verdict. The attempt window is exhausted and
+      // every completed ball already carries skill + length + EXECUTED/MISSED +
+      // outcome, so ONLY NOW may the session be closed. A logged-but-unassessed
+      // delivery can never reach this point: it is not in the ledger at all.
+      if (nextProgress.completedBalls >= getActiveQuestMaxBalls(activePracticeQuest)) {
+        const finalVerdict = evaluateFinalQuestResult(activePracticeQuest, livePerf);
+        setExecutionResult(finalVerdict.result === "SUCCESS" ? "COMPLETED" : "FAILED");
+        handleConcludeSession(nextDeliveryLogs);
         return;
       }
     }
 
-    // Update ball counters. A structured quest's final delivery is not
-    // complete until its independent EXECUTED/MISSED assessment is recorded.
-    // Keep the chamber open for that final assessment instead of treating
-    // "Ball 6 logged" as "Ball 6 fully resolved".
-    if (!isExtra) {
+    // Over / ball counters — driven by COMPLETED balls, never by logged ones.
+    if (!finalizedDelivery.isExtra) {
       const nextLegalCount = legalBallsInCurrentOver + 1;
       if (nextLegalCount >= 6) {
         const nextOver = currentOverNumber + 1;
+        const questWindowStillOpen = !!activePracticeQuest && sessionActive;
+        if (nextOver > totalOversGoal && !questWindowStillOpen) {
+          // Plain training session over wrap — the ledger balls are complete.
+          handleConcludeSession(nextDeliveryLogs);
+          return;
+        }
         if (nextOver > totalOversGoal) {
-          const awaitsFinalQuestAssessment =
-            activePracticeQuest &&
-            sessionActive &&
-            executionResult === "ACTIVE" &&
-            isStructuredWindowQuest(activePracticeQuest);
-          if (!awaitsFinalQuestAssessment) {
-            handleConcludeSession(updatedLogs);
-          }
+          // Quest session whose attempt window is still open: keep bowling.
+          setLegalBallsInCurrentOver(0);
+          playSystemDing();
         } else {
           setCurrentOverNumber(nextOver);
           setLegalBallsInCurrentOver(0);
@@ -888,7 +902,26 @@ export default function EvolutionChamber({
     setLiveWicketType("BOWLED");
   };
 
-  const handleConcludeSession = (logsToUse = deliveryLogs) => {
+  const handleConcludeSession = (logsToUse: CompletedDelivery[] = deliveryLogs) => {
+    // COMPLETION GUARD — a session may only be concluded on COMPLETED balls.
+    // Every record in the authoritative ledger must carry its skill, landing
+    // length, EXECUTED/MISSED assessment (quest sessions) and outcome. If an
+    // incomplete delivery is somehow present the chamber stays open instead of
+    // reporting a wrong result.
+    const conclusionProgress = deriveBallProgress(logsToUse, requiresExecutionForRecords);
+    const incompleteBalls = logsToUse.filter((record) => !isCompleteBallRecord(record, requiresExecutionForRecords));
+    if (logsToUse.length === 0) return;
+    if (incompleteBalls.length > 0 || conclusionProgress.completedBalls !== logsToUse.length) {
+      console.error(
+        "[EvolutionChamber] Session conclusion blocked: incomplete ball records present.",
+        { logged: logsToUse.length, completed: conclusionProgress.completedBalls, incomplete: incompleteBalls.length }
+      );
+      return;
+    }
+    // The finalized records are the ONLY source of the session's execution
+    // counts — never a React state value captured before the final ball.
+    const executedCountFinal = conclusionProgress.executed;
+    const missedCountFinal = conclusionProgress.missed;
     // Smart Combat Efficiency calculation based on:
     // 1) Skills used & player ability (mastery and level)
     // 2) correct lengths: perfect, close, just short (increasing) vs short, full toss (decreasing)
@@ -1018,8 +1051,10 @@ export default function EvolutionChamber({
         const verdict = evaluateFinalQuestResult(activePracticeQuest, {
           totalDeliveries: logsToUse.length,
           qualifyingSuccess: qualifyingSuccessCount,
-          executed: manualQuestProgress.executed,
-          missed: manualQuestProgress.missed,
+          // Derived from the FINALIZED ball records of this session — the exact
+          // snapshot handed to the evaluator, never a stale React state value.
+          executed: executedCountFinal,
+          missed: missedCountFinal,
         });
         evalRes = { met: verdict.result === "SUCCESS", failures: verdict.failures, reason: verdict.reason };
       } else {
@@ -1091,8 +1126,8 @@ export default function EvolutionChamber({
         xpReward: activePracticeQuest.xpReward,
         masteryReward: activePracticeQuest.masteryReward,
         completionRule: activePracticeQuest.completionRule || "TOTAL_SUCCESSES",
-        executed: manualQuestProgress.executed,
-        missed: manualQuestProgress.missed,
+        executed: executedCountFinal,
+        missed: missedCountFinal,
         qualifyingSuccess: qualifyingSuccessCount,
         executionRequired: canonReq.executionRequired,
         successTarget: canonReq.successTarget,
@@ -1138,7 +1173,11 @@ export default function EvolutionChamber({
         distance: log.distance,
         zone: log.zone,
         dotBallType: log.dotBallType,
-        beatenType: log.beatenType
+        beatenType: log.beatenType,
+        // Per-ball execution assessment — part of the SAME complete ball record
+        // that entered the authoritative ledger at finalization time.
+        executionStatus: log.executionStatus,
+        executionAssessedAt: log.executionAssessedAt
       }))
     };
 
@@ -2430,13 +2469,13 @@ export default function EvolutionChamber({
                             <div className="flex items-center justify-between">
                               <span className="text-[9px] text-cyan-300 font-black uppercase">Executed</span>
                               <span className="text-[10px] font-black text-white">
-                                {manualQuestProgress.executed} / {getActiveQuestExecutionRequired(activePracticeQuest) || "—"}
+                                {executedCount} / {getActiveQuestExecutionRequired(activePracticeQuest) || "—"}
                               </span>
                             </div>
                             <div className="h-1.5 bg-black border border-gray-900 rounded-full overflow-hidden">
                               <div
                                 className="h-full bg-emerald-400 transition-all"
-                                style={{ width: `${getActiveQuestExecutionRequired(activePracticeQuest) > 0 ? Math.min(100, (manualQuestProgress.executed / getActiveQuestExecutionRequired(activePracticeQuest)) * 100) : 0}%` }}
+                                style={{ width: `${getActiveQuestExecutionRequired(activePracticeQuest) > 0 ? Math.min(100, (executedCount / getActiveQuestExecutionRequired(activePracticeQuest)) * 100) : 0}%` }}
                               />
                             </div>
                             <div className="flex items-center justify-between">
@@ -2451,34 +2490,29 @@ export default function EvolutionChamber({
                                 style={{ width: `${Math.min(100, (computeQualifyingSuccessCount(activePracticeQuest?.requirements || {}, deliveryLogs) / Math.max(1, getActiveQuestTarget(activePracticeQuest))) * 100)}%` }}
                               />
                             </div>
-                            <div className="grid grid-cols-2 gap-2">
-                              <button
-                                type="button"
-                                onClick={() => markQuestExecution("EXECUTED")}
-                                disabled={executionResult !== "ACTIVE" || manualQuestProgress.executed + manualQuestProgress.missed >= getActiveQuestMaxBalls(activePracticeQuest) || deliveryLogs.length === 0 || lastAssessedQuestDelivery >= deliveryLogs.length}
-                                className="py-2 rounded border border-green-500/30 bg-green-500/10 text-green-300 hover:bg-green-400 hover:text-black text-[10px] font-mono font-black uppercase disabled:opacity-40 disabled:cursor-not-allowed"
-                              >
-                                Executed
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => markQuestExecution("MISSED")}
-                                disabled={executionResult !== "ACTIVE" || manualQuestProgress.executed + manualQuestProgress.missed >= getActiveQuestMaxBalls(activePracticeQuest) || deliveryLogs.length === 0 || lastAssessedQuestDelivery >= deliveryLogs.length}
-                                className="py-2 rounded border border-red-500/30 bg-red-500/10 text-red-300 hover:bg-red-500 hover:text-white text-[10px] font-mono font-black uppercase disabled:opacity-40 disabled:cursor-not-allowed"
-                              >
-                                Missed
-                              </button>
+                            {/* Step 3 of the ball flow lives in the ball logger (below the
+                                delivery outcome controls): the EXECUTED/MISSED selection
+                                fills the CURRENT-BALL DRAFT and is recorded as part of the
+                                same atomic ball record when the ball is finalized. */}
+                            <div className={`p-2 rounded border text-[9px] font-mono font-black uppercase text-center ${
+                              ballExecutionDraft === "EXECUTED"
+                                ? "border-green-500/40 bg-green-500/10 text-green-300"
+                                : ballExecutionDraft === "MISSED"
+                                  ? "border-red-500/40 bg-red-500/10 text-red-300"
+                                  : "border-gray-800 bg-black/60 text-gray-500"
+                            }`}>
+                              {ballExecutionDraft ? `Current ball draft: ${ballExecutionDraft}` : "Current ball draft: execution not selected"}
                             </div>
                             <div className="flex justify-between text-[9px] text-gray-500">
-                              <span>Missed: {manualQuestProgress.missed}</span>
-                              <span>{lastAssessedQuestDelivery < deliveryLogs.length ? "Record this delivery" : "Delivery recorded"} · Attempt cap: {getActiveQuestMaxBalls(activePracticeQuest)} balls</span>
+                              <span>Missed: {missedCount}</span>
+                              <span>Attempt cap: {getActiveQuestMaxBalls(activePracticeQuest)} balls</span>
                             </div>
                             <div className="grid grid-cols-2 gap-2 text-[9px] pt-1 border-t border-gray-900">
-                              <span>Attempts: <strong className="text-white">{manualQuestProgress.executed + manualQuestProgress.missed} / {getActiveQuestMaxBalls(activePracticeQuest)}</strong></span>
+                              <span>Attempts: <strong className="text-white">{completedBallsCount} / {getActiveQuestMaxBalls(activePracticeQuest)}</strong></span>
                               <span>Qualifying: <strong className="text-white">{computeQualifyingSuccessCount(activePracticeQuest?.requirements || {}, deliveryLogs)} / {getActiveQuestTarget(activePracticeQuest)}</strong></span>
                               <span>Remaining: <strong className="text-white">{Math.max(0, getActiveQuestTarget(activePracticeQuest) - computeQualifyingSuccessCount(activePracticeQuest?.requirements || {}, deliveryLogs))} successes</strong></span>
-                              <span>Window: <strong className="text-white">Over {Math.min(Math.ceil(Math.max(1, manualQuestProgress.executed + manualQuestProgress.missed) / 6), Number(activePracticeQuest.maximumOvers || activePracticeQuest.overs || activePracticeQuest.oversLength || activePracticeQuest.requirements.oversMin || totalOversGoal))} / {activePracticeQuest.maximumOvers || activePracticeQuest.overs || activePracticeQuest.oversLength || activePracticeQuest.requirements.oversMin || totalOversGoal}</strong></span>
-                              <span>Ball: <strong className="text-white">{((manualQuestProgress.executed + manualQuestProgress.missed) % 6) + 1} / 6</strong></span>
+                              <span>Window: <strong className="text-white">Over {Math.min(Math.ceil(Math.max(1, completedBallsCount) / 6), Number(activePracticeQuest.maximumOvers || activePracticeQuest.overs || activePracticeQuest.oversLength || activePracticeQuest.requirements.oversMin || totalOversGoal))} / {activePracticeQuest.maximumOvers || activePracticeQuest.overs || activePracticeQuest.oversLength || activePracticeQuest.requirements.oversMin || totalOversGoal}</strong></span>
+                              <span>Ball: <strong className="text-white">{(completedBallsCount % 6) + 1} / 6</strong></span>
                             </div>
                             {executionResult !== "ACTIVE" && <div className={`p-2 rounded text-center font-black uppercase ${executionResult === "COMPLETED" ? "bg-emerald-950/30 text-emerald-300 border border-emerald-500/30" : "bg-red-950/30 text-red-300 border border-red-500/30"}`}>{executionResult === "COMPLETED" ? "Quest complete — objective achieved" : "Objective not achieved — attempts exhausted"}</div>}
                           </div>
@@ -2583,15 +2617,15 @@ export default function EvolutionChamber({
 
                 </div>
 
-                {/* MANUAL QUEST EXECUTION PANEL — always visible when a delivery is awaiting assessment */}
-                {activePracticeQuest && sessionActive && executionResult === "ACTIVE" && lastAssessedQuestDelivery < deliveryLogs.length && (() => {
+                {/* STEP 3 — QUEST DELIVERY EXECUTION (fills the CURRENT-BALL DRAFT).
+                    The selection is recorded as part of the same atomic ball record
+                    when the ball is finalized below — never afterwards. */}
+                {activePracticeQuest && sessionActive && executionResult === "ACTIVE" && (() => {
                   const target = getActiveQuestTarget(activePracticeQuest);
                   const maxAttempts = getActiveQuestMaxBalls(activePracticeQuest);
-                  const currentAttempts = manualQuestProgress.executed + manualQuestProgress.missed;
                   const qualifyingDone = computeQualifyingSuccessCount(activePracticeQuest?.requirements || {}, deliveryLogs);
-                  const awaitingBall = deliveryLogs[lastAssessedQuestDelivery];
-                  const awaitingOver = awaitingBall?.over || currentOverNumber;
-                  const awaitingBallNum = awaitingBall?.ballNum || (legalBallsInCurrentOver + 1);
+                  const draftBallNum = Math.min(6, legalBallsInCurrentOver + 1);
+                  const draftLocked = completedBallsCount >= maxAttempts;
                   const completionPct = target > 0 ? Math.min(100, Math.round((qualifyingDone / target) * 100)) : 0;
                   return (
                     <motion.div
@@ -2603,19 +2637,19 @@ export default function EvolutionChamber({
                       <div className="flex items-center justify-between">
                         <div className="flex items-center gap-2">
                           <span className="w-2.5 h-2.5 rounded-full bg-[#7B2FFF] animate-pulse" />
-                          <span className="text-[10px] font-mono text-[#7B2FFF] font-black uppercase tracking-widest">AWAITING EXECUTION RESULT</span>
+                          <span className="text-[10px] font-mono text-[#7B2FFF] font-black uppercase tracking-widest">3. QUEST DELIVERY EXECUTION — EXECUTED / MISSED</span>
                         </div>
                         <span className="text-[9px] font-mono text-gray-400 bg-black/40 px-2 py-1 rounded border border-gray-800">
-                          BALL {awaitingBallNum} · OVER {awaitingOver}
+                          BALL {draftBallNum} · OVER {currentOverNumber}
                         </span>
                       </div>
 
-                      {/* Delivery info */}
+                      {/* Delivery info — the current ball draft being built */}
                       <div className="p-3 bg-black/50 rounded-xl border border-gray-800/60">
                         <div className="flex items-center justify-between text-[10px] font-mono">
-                          <span className="text-gray-400">Skill: <strong className="text-purple-300 uppercase">{awaitingBall?.skillName || activeSkill?.name}</strong></span>
-                          <span className="text-gray-400">Pitch: <strong className="text-yellow-400 uppercase">{awaitingBall?.length || selectedLengthMetric}</strong></span>
-                          <span className={`text-gray-400 ${isQualifyingDelivery(activePracticeQuest?.requirements || {}, awaitingBall) ? "text-green-400" : "text-red-400"}`}>Qualifies: <strong className={`${isQualifyingDelivery(activePracticeQuest?.requirements || {}, awaitingBall) ? "text-green-400" : "text-red-400"}`}>{isQualifyingDelivery(activePracticeQuest?.requirements || {}, awaitingBall) ? "YES" : "NO"}</strong></span>
+                          <span className="text-gray-400">Skill: <strong className="text-purple-300 uppercase">{activeSkill?.name || "—"}</strong></span>
+                          <span className="text-gray-400">Pitch: <strong className="text-yellow-400 uppercase">{selectedLengthMetric || "NOT SELECTED"}</strong></span>
+                          <span className="text-gray-400">Draft: <strong className={ballExecutionDraft === "EXECUTED" ? "text-green-400" : ballExecutionDraft === "MISSED" ? "text-red-400" : "text-gray-500"}>{ballExecutionDraft || "PENDING"}</strong></span>
                         </div>
                       </div>
 
@@ -2627,11 +2661,11 @@ export default function EvolutionChamber({
                         </div>
                         <div className="p-2 bg-red-950/20 border border-red-500/20 rounded-lg">
                           <span className="text-[7px] text-red-400 block uppercase font-bold">Executed</span>
-                          <span className="text-sm font-black text-red-300">{manualQuestProgress.executed}</span>
+                          <span className="text-sm font-black text-red-300">{executedCount}</span>
                         </div>
                         <div className="p-2 bg-amber-950/20 border border-amber-500/20 rounded-lg">
                           <span className="text-[7px] text-amber-400 block uppercase font-bold">Missed</span>
-                          <span className="text-sm font-black text-amber-300">{manualQuestProgress.missed}</span>
+                          <span className="text-sm font-black text-amber-300">{missedCount}</span>
                         </div>
                         <div className="p-2 bg-purple-950/20 border border-purple-500/20 rounded-lg">
                           <span className="text-[7px] text-purple-400 block uppercase font-bold">Remaining</span>
@@ -2642,7 +2676,7 @@ export default function EvolutionChamber({
                       {/* Completion bar */}
                       <div className="space-y-1">
                         <div className="flex justify-between text-[9px] font-mono">
-                          <span className="text-gray-500 uppercase">COMPLETION</span>
+                          <span className="text-gray-500 uppercase">COMPLETED BALLS {completedBallsCount} / {maxAttempts}</span>
                           <span className="text-[#7B2FFF] font-black">{completionPct}%</span>
                         </div>
                         <div className="h-2.5 bg-black border border-gray-800 rounded-full overflow-hidden">
@@ -2653,22 +2687,30 @@ export default function EvolutionChamber({
                         </div>
                       </div>
 
-                      {/* EXECUTED / MISSED buttons */}
+                      {/* EXECUTED / MISSED draft selection */}
                       <div className="grid grid-cols-2 gap-3 pt-1">
                         <button
                           type="button"
-                          onClick={() => markQuestExecution("EXECUTED")}
-                          disabled={currentAttempts >= maxAttempts}
-                          className="py-4 rounded-xl border-2 border-green-500/50 bg-green-500/10 text-green-300 hover:bg-green-500 hover:text-black font-mono text-sm font-black uppercase tracking-wider transition-all disabled:opacity-30 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                          onClick={() => setBallExecutionAssessment("EXECUTED")}
+                          disabled={draftLocked}
+                          className={`py-4 rounded-xl border-2 font-mono text-sm font-black uppercase tracking-wider transition-all disabled:opacity-30 disabled:cursor-not-allowed flex items-center justify-center gap-2 ${
+                            ballExecutionDraft === "EXECUTED"
+                              ? "border-green-400 bg-green-500 text-black"
+                              : "border-green-500/50 bg-green-500/10 text-green-300 hover:bg-green-500 hover:text-black"
+                          }`}
                         >
                           <CheckCircle className="w-5 h-5" />
                           ✅ EXECUTED
                         </button>
                         <button
                           type="button"
-                          onClick={() => markQuestExecution("MISSED")}
-                          disabled={currentAttempts >= maxAttempts}
-                          className="py-4 rounded-xl border-2 border-red-500/50 bg-red-500/10 text-red-300 hover:bg-red-500 hover:text-white font-mono text-sm font-black uppercase tracking-wider transition-all disabled:opacity-30 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                          onClick={() => setBallExecutionAssessment("MISSED")}
+                          disabled={draftLocked}
+                          className={`py-4 rounded-xl border-2 font-mono text-sm font-black uppercase tracking-wider transition-all disabled:opacity-30 disabled:cursor-not-allowed flex items-center justify-center gap-2 ${
+                            ballExecutionDraft === "MISSED"
+                              ? "border-red-400 bg-red-500 text-white"
+                              : "border-red-500/50 bg-red-500/10 text-red-300 hover:bg-red-500 hover:text-white"
+                          }`}
                         >
                           <XCircle className="w-5 h-5" />
                           ❌ MISSED
@@ -2677,21 +2719,21 @@ export default function EvolutionChamber({
 
                       {/* Hint */}
                       <p className="text-[9px] text-gray-500 font-mono text-center leading-relaxed">
-                        Record the result for Ball {awaitingBallNum} before logging the next delivery.
+                        Ball {draftBallNum} is finalized — and counted — only after BOTH this assessment and its outcome are recorded.
                       </p>
                     </motion.div>
                   );
                 })()}
 
-                {/* LOG BALL TELEMETRY PRIMARY MASTER SUBMIT ACTION */}
+                {/* STEP 5 — FINALIZE THE BALL: single atomic append to the ledger */}
                 <button
                   type="button"
                   onClick={handleLogDelivery}
-                  disabled={activePracticeQuest && sessionActive && executionResult === "ACTIVE" && lastAssessedQuestDelivery < deliveryLogs.length}
+                  disabled={!!(activePracticeQuest && sessionActive && (executionResult !== "ACTIVE" || (executionAssessmentRequired && !isQuestExecutionStatus(ballExecutionDraft))))}
                   className="w-full py-4.5 bg-gradient-to-r from-red-600 to-[#7B2FFF] text-white font-mono text-xs font-black tracking-widest uppercase rounded-xl border border-red-500/20 shadow-[0_0_15px_rgba(123,47,255,0.25)] hover:bg-[#6c28eb] transition cursor-pointer flex items-center justify-center gap-2 block animate-pulse hover:animate-none disabled:opacity-40 disabled:cursor-not-allowed disabled:animate-none"
                 >
                   <CheckCircle className="w-5 h-5 text-white" />
-                  LOG BALL OUTCOME TELEMETRY
+                  FINALIZE BALL · LOG COMPLETE BALL RECORD
                 </button>
 
               </div>

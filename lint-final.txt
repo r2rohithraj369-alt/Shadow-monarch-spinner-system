@@ -1,0 +1,7 @@
+error TS6053: File 'd:/Shadow monarch system/monarch-spinner-system (2)/dist/assets/web-CFHDK7SA.js' not found.
+  The file is in the program because:
+    Matched by default include pattern '**/*'
+error TS6053: File 'd:/Shadow monarch system/monarch-spinner-system (2)/dist/assets/web-Croj_hmo.js' not found.
+  The file is in the program because:
+    Matched by default include pattern '**/*'
+__LINT_DONE__

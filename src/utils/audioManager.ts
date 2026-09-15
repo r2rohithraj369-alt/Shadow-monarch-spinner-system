@@ -16,7 +16,7 @@ class AudioManager {
   private masterVolume: number = 0.8;
   private musicVolume: number = 0.5;
   private effectsVolume: number = 0.7;
-  private isMuted: boolean = false;
+  private muted: boolean = false;
   /** SYSTEM SOUNDS preference (persisted, default ON). */
   private systemSoundsEnabled: boolean = true;
 
@@ -43,7 +43,7 @@ class AudioManager {
         this.masterVolume = data.masterVolume !== undefined ? data.masterVolume : 0.8;
         this.musicVolume = data.musicVolume !== undefined ? data.musicVolume : 0.5;
         this.effectsVolume = data.effectsVolume !== undefined ? data.effectsVolume : 0.7;
-        this.isMuted = data.isMuted !== undefined ? data.isMuted : false;
+        this.muted = data.isMuted !== undefined ? data.isMuted : false;
         this.systemSoundsEnabled = data.systemSoundsEnabled !== undefined ? data.systemSoundsEnabled : true;
       }
     } catch (e) {
@@ -62,7 +62,7 @@ class AudioManager {
           masterVolume: this.masterVolume,
           musicVolume: this.musicVolume,
           effectsVolume: this.effectsVolume,
-          isMuted: this.isMuted,
+          isMuted: this.muted,
           systemSoundsEnabled: this.systemSoundsEnabled,
         })
       );
@@ -91,7 +91,7 @@ class AudioManager {
       this.syncNodeVolumes();
 
       // Start background ambient engine if configured
-      if (!this.isAmbientPlaying && !this.isMuted) {
+      if (!this.isAmbientPlaying && !this.muted) {
         this.startAmbientEngine();
       }
     } catch (e) {
@@ -116,7 +116,7 @@ class AudioManager {
   }
 
   private syncNodeVolumes() {
-    const scalarMaster = this.isMuted ? 0 : this.masterVolume;
+    const scalarMaster = this.muted ? 0 : this.masterVolume;
     const scalarMusic = this.musicVolume;
     const scalarSfx = this.effectsVolume;
 
@@ -155,11 +155,11 @@ class AudioManager {
   }
 
   public toggleMute() {
-    this.isMuted = !this.isMuted;
+    this.muted = !this.muted;
     this.saveSettings();
     this.syncNodeVolumes();
 
-    if (this.isMuted) {
+    if (this.muted) {
       this.stopAmbientEngine();
     } else {
       this.init();
@@ -171,14 +171,14 @@ class AudioManager {
       masterVolume: this.masterVolume,
       musicVolume: this.musicVolume,
       effectsVolume: this.effectsVolume,
-      isMuted: this.isMuted,
+      isMuted: this.muted,
       systemSoundsEnabled: this.systemSoundsEnabled,
     };
   }
 
   /** Master mute state (consumed by the Monarch sound manager). */
   public isMuted(): boolean {
-    return this.isMuted;
+    return this.muted;
   }
 
   public getMasterVolume(): number {
@@ -708,7 +708,7 @@ class AudioManager {
       this.init();
       return;
     }
-    if (!this.ambientGain || this.isAmbientPlaying || this.isMuted) return;
+    if (!this.ambientGain || this.isAmbientPlaying || this.muted) return;
 
     this.isAmbientPlaying = true;
     const now = this.ctx.currentTime;
@@ -760,7 +760,7 @@ class AudioManager {
     this.lastRankId = rankId;
     this.lastLevel = level;
 
-    if (!this.ctx || !this.isAmbientPlaying || this.isMuted) return;
+    if (!this.ctx || !this.isAmbientPlaying || this.muted) return;
 
     const now = this.ctx.currentTime;
     const targetBase = this.getBaseFrequencyForRank(rankId);

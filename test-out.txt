@@ -1,0 +1,258 @@
+
+=== QUEST SYSTEM ===
+
+=== QUEST SYSTEM ===
+  PASS  Q1 Perfect+Executed qualifies
+  PASS  Q1b Perfect+Executed final verdict SUCCESS
+  PASS  Q2 Perfect+Missed still qualifies (outcome-based)
+  PASS  Q3 Short does not qualify under PERFECT
+  PASS  Q4 Short delivery never qualifies
+  PASS  Q5 Single miss does not fail normal quest
+  PASS  Q6 NO_MISSES_ALLOWED fails on miss
+  PASS  Q6b NO_MISSES_ALLOWED live FAIL
+  PASS  Q7 Early success triggers SUCCESS live
+  PASS  Q8 Impossible state (0/3 with 1 ball left) FAIL
+  PASS  Q9b Window NOT exhausted -> still ACTIVE
+  PASS  Q9 Window exhausted without target -> FAILED
+  PASS  Q10 Explicit totalBalls=18 preserved over overs*6=12
+  PASS  Q11a successTarget preserved
+  PASS  Q11b executionRequired preserved independently
+  PASS  Q11c Target met but execution gate unmet -> FAILED
+  PASS  Q12a Negative successTarget rejected
+  PASS  Q12b successTarget > totalBalls rejected
+  PASS  Q12c Missing qualifying condition rejected
+  PASS  Q13 Normalization preserves explicit totalBalls
+
+=== ANALYTICS ===
+  PASS  A1 No Math.random in analytics engine
+  PASS  A2 Empty data -> success probability insufficient
+  PASS  A3 Empty data -> consistency insufficient
+  PASS  A4 Empty data -> current form insufficient
+  PASS  A5 Deterministic: identical inputs -> identical output
+  PASS  A6 Real data -> success probability computed
+  PASS  A7 Explanation references actual data
+  PASS  A8 Lifetime vs recent distinguishable (recentSessions slice)
+
+=== ASCENSION ===
+  PASS  S0 Rank requirements table populated
+  PASS  S1 getRankRequirements resolves by rank
+  PASS  S2 Requirement uses PLAYER level (levelNeeded field)
+  PASS  S3 No skill-XP/mastery field mixed into player rank requirements
+  PASS  S4 Unknown rank returns undefined (no fabricated requirements)
+
+=== RESET ===
+  PASS  R1 ARISE accepted
+  PASS  R2 Case-sensitive: 'arise' rejected
+  PASS  R3 CONFIRM RESET accepted
+  PASS  R4 Wrong confirmation rejected
+  PASS  R5 Authoritative maximum is 5
+  PASS  R6 canReset(0)=true (0/5)
+  PASS  R7 canReset(1)=true (1/5)
+  PASS  R8 canReset(2)=true (2/5)
+  PASS  R9 canReset(3)=true (3/5)
+  PASS  R10 canReset(4)=true (4/5)
+  PASS  R11 canReset(5)=false (5/5 permanently disabled)
+  PASS  R12 canReset(6)=false (beyond limit)
+
+=== ACCOUNT ISOLATION / PLAYER STORAGE ===
+  PASS  I1 Local player data detected
+  PASS  I2 Stale ownership detected for User B
+  PASS  I3 Same ownership NOT flagged for User A
+  PASS  I4 Purge removes ALL player-scoped keys (incl. evolution history)
+  PASS  I5 hasLocalPlayerData false after purge
+  PASS  I6 Permanent Quest Database survives purge
+  PASS  I7 Global settings survive purge
+  PASS  I8 No ownership marker -> not stale
+  PASS  I9 Last-user marker round trip
+  PASS  I10 Evolution history key is player-scoped (cleared on reset)
+  PASS  I11 Quest Database key is NOT player-scoped (survives reset)
+
+=== BOOT-TIME OWNERSHIP GATE (FIRST-PAINT ISOLATION) ===
+[ACCOUNT SWITCH][BOOT] cache owner user-aaa differs from persisted session user — purged 1 player keys
+  PASS  B1 Stale Account A cache purged at boot when session is Account B
+  PASS  B2 Quest Database (global) survives boot purge
+  PASS  B3 Ownership marker updated to Account B
+  PASS  B4 Same-account boot keeps owned cache
+[ACCOUNT SWITCH][BOOT] cache had NO owner marker (legacy/pre-isolation build) while a persisted session exists — purged 1 player keys
+  PASS  B5 Unowned (marker-less) cache purged when a session exists
+[ACCOUNT SWITCH][BOOT] guest/offline boot — cache belongs to signed-in user user-aaa — purged 1 player keys
+  PASS  B6 Guest boot purges signed-in user's cache
+  PASS  B7 Guest boot marks cache as guest-owned
+  PASS  B8 Fresh device with session: no purge, marker claimed
+  PASS  B9 Second boot-resolution call is a no-op (live data safe)
+
+=== RESET COUNTER (CLOUD-AUTHORITATIVE, PER-USER) ===
+[RESET] Count read OK for user user-aaa… count=0
+[RESET] Counter upsert for user user-aaa… 0 -> 1 (first-reset insert handled by upsert on user_id)
+[RESET] Counter write OK for user user-aaa… new count=1
+  PASS  RC1 First reset creates counter row 0 -> 1
+[RESET] Count read OK for user user-aaa… count=0
+[RESET] Counter upsert for user user-aaa… 0 -> 1 (first-reset insert handled by upsert on user_id)
+[RESET] Counter write OK for user user-aaa… new count=1
+[RESET] Count read OK for user user-aaa… count=1
+[RESET] Counter upsert for user user-aaa… 1 -> 2 (first-reset insert handled by upsert on user_id)
+[RESET] Counter write OK for user user-aaa… new count=2
+[RESET] Count read OK for user user-aaa… count=2
+[RESET] Counter upsert for user user-aaa… 2 -> 3 (first-reset insert handled by upsert on user_id)
+[RESET] Counter write OK for user user-aaa… new count=3
+[RESET] Count read OK for user user-aaa… count=3
+[RESET] Counter upsert for user user-aaa… 3 -> 4 (first-reset insert handled by upsert on user_id)
+[RESET] Counter write OK for user user-aaa… new count=4
+[RESET] Count read OK for user user-aaa… count=4
+[RESET] Counter upsert for user user-aaa… 4 -> 5 (first-reset insert handled by upsert on user_id)
+[RESET] Counter write OK for user user-aaa… new count=5
+  PASS  RC2 Resets 1..5 all allowed and increment exactly once each
+[RESET] Count read OK for user user-aaa… count=5
+  PASS  RC3 Sixth reset BLOCKED at 5/5
+  PASS  RC4 Count can never exceed 5 (no write attempted at limit)
+[RESET] Count read OK for user user-bbb… count=0
+[RESET] Counter upsert for user user-bbb… 0 -> 1 (first-reset insert handled by upsert on user_id)
+[RESET] Counter write OK for user user-bbb… new count=1
+  PASS  RC5 Reset count is user-scoped: B's reset does not touch A
+[RESET] Count read FAILED for user user-aaa… table=game_resets code=TABLE_MISSING: The 'game_resets' table does not exist in the live Supabase database. Run supabase/migrations/20260908_player_isolation_and_reset.sql then supabase/migrations/20260910_full_game_reset_limit_5.sql in the Supabase SQL Editor.
+  PASS  RC6 Missing game_resets table -> ok=false with TABLE_MISSING
+  PASS  RC7 TABLE_MISSING message names the migration file
+[RESET] Count read FAILED for user user-aaa… table=game_resets code=TABLE_MISSING: The 'game_resets' table does not exist in the live Supabase database. Run supabase/migrations/20260908_player_isolation_and_reset.sql then supabase/migrations/20260910_full_game_reset_limit_5.sql in the Supabase SQL Editor.
+[RESET] Aborted for user user-aaa… — counter unreadable (TABLE_MISSING)
+  PASS  RC8 Reset ABORTS (no data loss) when counter is unreadable
+  PASS  RC9 No profile writes attempted when counter unreadable
+[RESET] Count read OK for user user-aaa… count=0
+[RESET] Eligible for user user-aaa… current count=0/5
+[RESET] Count read OK for user user-aaa… count=0
+[RESET] Counter upsert for user user-aaa… 0 -> 1 (first-reset insert handled by upsert on user_id)
+[RESET] Counter write FAILED for user user-aaa… table=game_resets code=RLS_BLOCKED: Row Level Security rejected the reset-counter operation. Verify the users_select/insert/update_own_reset_count policies exist on game_resets.
+[GameReset] Reset counter update failed — compensating: Error: Row Level Security rejected the reset-counter operation. Verify the users_select/insert/update_own_reset_count policies exist on game_resets.
+    at incrementResetCountWithClient (d:\Shadow monarch system\monarch-spinner-system (2)\src\utils\gameResetManager.ts:171:22)
+    at async performGameResetCore (d:\Shadow monarch system\monarch-spinner-system (2)\src\utils\gameResetManager.ts:360:7)
+    at async <anonymous> (d:\Shadow monarch system\monarch-spinner-system (2)\tests\criticalLogic.test.ts:469:25) {
+  code: 'RLS_BLOCKED'
+}
+  PASS  RC10 Counter write RLS failure -> honest failure (no false success)
+  PASS  RC11 Previous profile RESTORED after counter failure (compensation)
+  PASS  RC12 FAILED reset does NOT increment the counter
+
+=== FULL GAME RESET FLOW (QUEST DB PRESERVED, STATE CLEARED) ===
+[RESET] Count read OK for user user-aaa… count=0
+[RESET] Eligible for user user-aaa… current count=0/5
+[RESET] Count read OK for user user-aaa… count=0
+[RESET] Counter upsert for user user-aaa… 0 -> 1 (first-reset insert handled by upsert on user_id)
+[RESET] Counter write OK for user user-aaa… new count=1
+[RESET] Local purge for user user-aaa… removed 16 player keys (global Quest Database preserved)
+  PASS  F1 Full reset succeeds on a healthy cloud (0/2)
+  PASS  F2 Reset counter consumed: 0 -> 1
+  PASS  F3 Player progression cleared in cloud (player null, skills empty, attributes all zero)
+  PASS  F4 Quest progress / completed history / evolution cleared
+  PASS  F5 GLOBAL Quest Database preserved through reset
+  PASS  F6 Player-scoped localStorage purged after successful reset
+  PASS  F7 Global Quest Database key survives local purge
+[RESET] Count read OK for user user-aaa… count=4
+[RESET] Eligible for user user-aaa… current count=4/5
+[RESET] Count read OK for user user-aaa… count=4
+[RESET] Counter upsert for user user-aaa… 4 -> 5 (first-reset insert handled by upsert on user_id)
+[RESET] Counter write OK for user user-aaa… new count=5
+[RESET] Local purge for user user-aaa… removed 0 player keys (global Quest Database preserved)
+[RESET] Count read OK for user user-aaa… count=5
+  PASS  F8 Fifth reset allowed (4 -> 5)
+  PASS  F9 Sixth reset BLOCKED at 5/5 (permanently locked)
+  PASS  F10 Reset profile falls back to local Quest Database when cloud has none
+  PASS  F11 Reset profile persists every attribute with value 0
+  PASS  F12 Attribute identities/order preserved in reset profile
+  PASS  F13 Cloud hydration of reset profile keeps ALL attributes at 0 (no 12..0 resurrection)
+[RESET] Count read OK for user user-bbb… count=0
+[RESET] Eligible for user user-bbb… current count=0/5
+[RESET] Count read OK for user user-bbb… count=0
+[RESET] Counter upsert for user user-bbb… 0 -> 1 (first-reset insert handled by upsert on user_id)
+[RESET] Counter write OK for user user-bbb… new count=1
+[RESET] Local purge for user user-bbb… removed 0 player keys (global Quest Database preserved)
+  PASS  F14 Reset for user B leaves user A's profile untouched
+  PASS  F15 User B receives a genuine reset (zeroed attributes), not A's data
+
+=== ATTRIBUTE ENGINE (ZERO START, NO INDEX-AS-VALUE) ===
+  PASS  A1 Initial attributes: every value is exactly 0
+  PASS  A2 All attribute identities present (13 attributes + Arcane Mastery average)
+  PASS  A3 Attribute names/order match the canonical definitions
+  PASS  A4 No index-derived values (never 12,11,10..0 pattern)
+  PASS  A5 ensureCompleteAttributes([]) yields all-zero starting attributes
+  PASS  A6 ensureCompleteAttributes preserves real progressed values
+  PASS  A7 buildResetProfile attributes are all zero with canonical names
+
+=== BULK QUEST COMPILER (DESCRIPTION KEEPS BLANK LINES / BALL 1-6) ===
+  PASS  BULK1 Exactly ONE quest compiled (blank lines are NOT quest separators)
+  PASS  BULK2 Zero skipped quests (no Missing Title / Required Successes errors)
+  PASS  BULK3 Title preserved: The Length Funnel
+  PASS  BULK4 Multi-paragraph Description kept readable (blank lines preserved)
+  PASS  BULK5 Ball 1..6 all inside ONE Description (not quest boundaries)
+  PASS  BULK6 Indentation inside Description preserved
+  PASS  BULK7 Category parsed as Practice
+  PASS  BULK8 Arena parsed as Evolution Chamber
+  PASS  BULK9 Mode parsed as T20 Variation Drill
+  PASS  BULK10 Overs parsed as 1
+  PASS  BULK11 Skill parsed as Leg Break
+  PASS  BULK12 Difficulty parsed as CHALLENGING
+  PASS  BULK13 Total Balls parsed as 6
+  PASS  BULK14 To Be Executed parsed as 6
+  PASS  BULK15 Required Successes parsed as 6
+  PASS  BULK16 Success Condition captured
+  PASS  BULK17 Early Completion captured as Disabled
+  PASS  BULK18 Failure Condition captured
+  PASS  BULK19 No 'Missing Title' skip
+  PASS  BULK20 No 'Required Successes missing' skip
+
+=== EVOLUTION CHAMBER FINAL BALL (6-BALL QUEST, TWO-STAGE COMPLETION) ===
+  PASS  FB1 Balls 1-5 resolved -> chamber still ACTIVE (final ball remains)
+  PASS  FB2 Live evaluator ACTIVE at window exhaustion (early completion disabled)
+  PASS  FB2b Final authoritative verdict after Ball 6 resolved -> SUCCESS
+  PASS  FB3 Final ball resolved, target unmet, window exhausted -> FAILED
+  PASS  FB4 Miss does NOT auto-fail a WINDOW_EXHAUSTED quest
+  PASS  FB5 NO_MISSES_ALLOWED still fails on a missed ball
+  PASS  FB6 PERFECT BALL qualifies regardless of the execution assessment
+  PASS  FB7 Ball finalization uses the single atomic finalizeBall + deriveBallProgress path
+  PASS  FB8 The finalized ball is appended to the ledger exactly once
+  PASS  FB9 Final ball authoritative closer uses evaluateFinalQuestResult
+  PASS  FB10 Landing outcome selection mandatory before logging a delivery
+  PASS  FB11 No post-hoc execution patching of an already-counted ball
+  PASS  FB12 Session conclusion guarded on complete ball records
+  PASS  FB13 EXECUTED/MISSED is mandatory (never inferred) before finalizing a ball
+
+=== EVOLUTION CHAMBER — ATOMIC BALL FINALIZATION (6-BALL FLOW) ===
+  PASS  FB14 Ball 1 finalizes as ONE complete record
+  PASS  FB15 Ball 1: completed=1 executed=1 missed=0
+  PASS  FB16 Ball 1 record carries skill + length + execution + outcome
+  PASS  FB17 Ball 1: session stays open (live ACTIVE)
+  PASS  FB14 Ball 2 finalizes as ONE complete record
+  PASS  FB15 Ball 2: completed=2 executed=2 missed=0
+  PASS  FB16 Ball 2 record carries skill + length + execution + outcome
+  PASS  FB17 Ball 2: session stays open (live ACTIVE)
+  PASS  FB14 Ball 3 finalizes as ONE complete record
+  PASS  FB15 Ball 3: completed=3 executed=3 missed=0
+  PASS  FB16 Ball 3 record carries skill + length + execution + outcome
+  PASS  FB17 Ball 3: session stays open (live ACTIVE)
+  PASS  FB14 Ball 4 finalizes as ONE complete record
+  PASS  FB15 Ball 4: completed=4 executed=4 missed=0
+  PASS  FB16 Ball 4 record carries skill + length + execution + outcome
+  PASS  FB17 Ball 4: session stays open (live ACTIVE)
+  PASS  FB14 Ball 5 finalizes as ONE complete record
+  PASS  FB15 Ball 5: completed=5 executed=5 missed=0
+  PASS  FB16 Ball 5 record carries skill + length + execution + outcome
+  PASS  FB17 Ball 5: session stays open (live ACTIVE)
+  PASS  FB14 Ball 6 finalizes as ONE complete record
+  PASS  FB15 Ball 6: completed=6 executed=6 missed=0
+  PASS  FB16 Ball 6 record carries skill + length + execution + outcome
+  PASS  FB18 Ball 6 EXECUTED: finalized ledger reports 6/6 executed
+  PASS  FB19 Ball 6 EXECUTED: final verdict from all 6 finalized records -> SUCCESS
+  PASS  FB19b Final evaluator received all 6 complete ball records
+  PASS  FB20 Ball 1 MISSED-case finalizes as one complete record
+  PASS  FB20 Ball 2 MISSED-case finalizes as one complete record
+  PASS  FB20 Ball 3 MISSED-case finalizes as one complete record
+  PASS  FB20 Ball 4 MISSED-case finalizes as one complete record
+  PASS  FB20 Ball 5 MISSED-case finalizes as one complete record
+  PASS  FB20 Ball 6 MISSED-case finalizes as one complete record
+  PASS  FB21 Ball 6 MISSED: completed=6, executed=5, missed=1
+  PASS  FB22 Ball 6 MISSED: verdict derived from executed=5 (execution gate unmet)
+  PASS  FB23 finalizeBall REJECTS a quest ball with no EXECUTED/MISSED assessment
+  PASS  FB24 A logged-but-unassessed record is never a completed ball
+  PASS  FB25 Non-quest training ball finalizes without an execution assessment
+
+=============================================
+RESULT: 170 passed, 0 failed
+__TEST_DONE__

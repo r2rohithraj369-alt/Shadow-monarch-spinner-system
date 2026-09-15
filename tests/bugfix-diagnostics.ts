@@ -2,6 +2,7 @@
  * Focused diagnostics for the two bugfixes (bulk compiler + final ball).
  * Run with: node node_modules/tsx/dist/cli.mjs tests/bugfix-diagnostics.ts
  */
+import type { PracticeQuest } from "../src/types";
 const g = globalThis as any;
 if (!g.localStorage || typeof g.localStorage.getItem !== "function") {
   const map = new Map<string, string>();
@@ -21,7 +22,11 @@ const {
   evaluateFinalQuestResult,
   getCanonicalQuestRequirements,
 } = await import("../src/utils/questCore");
-const { PracticeQuest } = await import("../src/types");
+const {
+  finalizeBall,
+  deriveBallProgress,
+  isCompleteBallRecord,
+} = await import("../src/utils/chamberBallLedger");
 
 function makeQuest(reqOverride: Partial<PracticeQuest["requirements"]> = {}, questOverride: Partial<PracticeQuest> = {}): PracticeQuest {
   return {
@@ -134,9 +139,50 @@ check("FB NO_MISSES_ALLOWED fails on miss", nm.result === "FAILED", nm.result);
 import * as fs from "fs";
 import * as path from "path";
 const src = fs.readFileSync(path.join(process.cwd(), "src", "components", "EvolutionChamber.tsx"), "utf8");
-check("SRC wrap gated on awaitsFinalQuestAssessment", /awaitsFinalQuestAssessment/.test(src) && /if \(!awaitsFinalQuestAssessment\)/.test(src));
+check("SRC atomic ball finalization uses finalizeBall + deriveBallProgress", /finalizeBall\(/.test(src) && /deriveBallProgress\(/.test(src));
 check("SRC final-ball authoritative closer uses evaluateFinalQuestResult", /evaluateFinalQuestResult\(activePracticeQuest,\s*livePerf\)/.test(src));
-check("SRC EXECUTED/MISSED needs a logged delivery first", /lastAssessedQuestDelivery\s*>=\s*deliveryLogs\.length\s*\)\s*return/.test(src));
+check(
+  "SRC no post-hoc execution patching of an already-counted ball",
+  !/manualQuestProgress|lastAssessedQuestDelivery|markQuestExecution/.test(src)
+);
+check(
+  "SRC EXECUTED/MISSED mandatory before finalizing a ball",
+  /executionAssessmentRequired && !isQuestExecutionStatus\(ballExecutionDraft\)/.test(src)
+);
+
+// ---------------- BUG 2: ATOMIC BALL LEDGER (6-BALL FLOW) ----------------
+const ballOutcome = {
+  isExtra: false,
+  extraType: "NONE" as const,
+  runsConceded: 0,
+  isWicket: false,
+  wicketType: "NONE",
+};
+let sixLedger: any[] = [];
+for (let ball = 1; ball <= 6; ball++) {
+  const fin = finalizeBall(
+    { skillId: "s1", skillName: "Leg Break", length: "Perfect Ball", executionStatus: "EXECUTED", outcome: ballOutcome },
+    { over: 1, ballNum: ball, xp: 35, requireExecution: true, assessedAt: `t${ball}` }
+  );
+  if (!fin.ok) break;
+  sixLedger = [...sixLedger, fin.delivery];
+  const p = deriveBallProgress(sixLedger, true);
+  check(`LEDGER ball ${ball} => completed ${p.completedBalls} / executed ${p.executed}`, p.completedBalls === ball && p.executed === ball && p.missed === 0);
+}
+check("LEDGER 6 complete balls all carry executionStatus", sixLedger.length === 6 && sixLedger.every((l) => isCompleteBallRecord(l, true)));
+const sixPerf = (() => {
+  const p = deriveBallProgress(sixLedger, true);
+  return { qualifyingSuccess: 6, executed: p.executed, missed: p.missed, totalDeliveries: p.completedBalls };
+})();
+check(
+  "LEDGER final verdict sees executed=6 (not 5)",
+  evaluateFinalQuestResult(sixBall, sixPerf).result === "SUCCESS" && sixPerf.executed === 6
+);
+const blocked = finalizeBall(
+  { skillId: "s1", skillName: "Leg Break", length: "Perfect Ball", executionStatus: null, outcome: ballOutcome },
+  { over: 1, ballNum: 7, xp: 35, requireExecution: true }
+);
+check("LEDGER an unassessed quest ball can never be finalized", blocked.ok === false);
 
 console.log(`\nDIAGNOSTIC RESULT: ${failedCount === 0 ? "ALL PASS" : `${failedCount} FAILED`}`);
 process.exit(failedCount === 0 ? 0 : 1);
